@@ -69,27 +69,60 @@ namespace VibeBar
             _enabled = visible;
             if (!visible)
             {
-                Hide();
+                try
+                {
+                    Hide();
+                }
+                catch (InvalidOperationException)
+                {
+                    _destroyed = true;
+                }
+
                 return;
             }
 
-            // Show() 之前创建句柄并写入 WS_EX_NOACTIVATE，避免 SetParent 后抢前台。
-            EnsureNoActivateStyle();
-
-            if (!IsVisible)
+            try
             {
-                Show();
-            }
+                // Show() 之前创建句柄并写入 WS_EX_NOACTIVATE，避免 SetParent 后抢前台。
+                EnsureNoActivateStyle();
 
-            AttachToTaskbar();
+                if (!IsVisible)
+                {
+                    Show();
+                }
+
+                AttachToTaskbar();
+            }
+            catch (InvalidOperationException)
+            {
+                // Explorer 重启时 TaskbarCreated 可能先于旧窗口的销毁到达；
+                // 此时 Window 已被级联销毁，任何 Show/EnsureHandle 都会抛异常。
+                // 标记失效，交由上层重建宿主。
+                MarkDestroyed();
+            }
         }
 
         internal void Reattach()
         {
-            if (_enabled && !_destroyed)
+            if (!_enabled || _destroyed)
+            {
+                return;
+            }
+
+            try
             {
                 AttachToTaskbar();
             }
+            catch (InvalidOperationException)
+            {
+                MarkDestroyed();
+            }
+        }
+
+        private void MarkDestroyed()
+        {
+            _destroyed = true;
+            _taskbar = IntPtr.Zero;
         }
 
         internal void SetWidthLimits(int maxWidth, int minWidth)
@@ -325,19 +358,28 @@ namespace VibeBar
             // 折叠必须在测量窗口宽度之前完成；低于 minWidth 时只保留额度。
             _strip.SetAvailableWidth(availableDip, _minWidth);
 
-            if (_strip.ContentHidden)
+            try
             {
-                if (IsVisible)
+                if (_strip.ContentHidden)
                 {
-                    Hide();
+                    if (IsVisible)
+                    {
+                        Hide();
+                    }
+
+                    return;
                 }
 
-                return;
+                if (!IsVisible)
+                {
+                    Show();
+                }
             }
-
-            if (!IsVisible)
+            catch (InvalidOperationException)
             {
-                Show();
+                // 窗口已被 Explorer 级联销毁，交给上层重建。
+                MarkDestroyed();
+                return;
             }
 
             UpdateLayout();

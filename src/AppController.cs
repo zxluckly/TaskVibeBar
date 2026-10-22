@@ -1039,6 +1039,18 @@ namespace VibeBar
             if (_host != null && !_host.IsDestroyed)
             {
                 _host.SetVisible(visible);
+
+                // Explorer 重启时 TaskbarCreated 可能先于旧窗口的销毁到达，
+                // SetVisible 会在此刻才发现宿主已失效：重建后重试一次。
+                if (_host.IsDestroyed)
+                {
+                    Log.Write("任务栏宿主已失效，重建后重试");
+                    RecreateHost();
+                    if (_host != null && !_host.IsDestroyed)
+                    {
+                        _host.SetVisible(visible);
+                    }
+                }
             }
 
             if (!visible)

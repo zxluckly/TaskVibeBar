@@ -32,12 +32,23 @@ namespace VibeBar
                             e.ExceptionObject as Exception);
                     };
 
+                // 托盘图标与右键菜单是 WinForms 控件，异常不走 WPF Dispatcher，
+                // 必须单独挂接 WinForms 线程的异常处理器。
+                Forms.Application.SetUnhandledExceptionMode(
+                    Forms.UnhandledExceptionMode.CatchException);
+
                 try
                 {
                     Application app = new Application();
                     app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
                     AppController controller = new AppController(app);
+
+                    Forms.Application.ThreadException +=
+                        delegate(object sender, System.Threading.ThreadExceptionEventArgs e)
+                        {
+                            controller.NotifyUnhandled(e.Exception);
+                        };
 
                     app.DispatcherUnhandledException +=
                         delegate(object sender, DispatcherUnhandledExceptionEventArgs e)
