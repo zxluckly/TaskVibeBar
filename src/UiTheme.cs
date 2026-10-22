@@ -9,9 +9,17 @@ namespace VibeBar
         internal const double SegmentSpacing = 6.0;
         internal const double BarContentHeight = 32.0;
         internal const double BarVerticalPadding = 1.0;
+        internal const double BarHorizontalPadding = 10.0;
         internal const double SegmentFontSize = 13.0;
+        internal const double SegmentHorizontalPadding = 4.0;
+        internal const double SegmentCornerRadius = 5.0;
+        internal const double SeparatorWidth = 1.0;
+        internal const double SeparatorSpacing = 6.0;
+        internal const double SeparatorHeight = 14.0;
         internal const double PanelWidth = 360.0;
         internal const double PanelMaxHeight = 480.0;
+        internal const double PanelCornerRadius = 10.0;
+        internal const double PanelShadowMargin = 8.0;
 
         internal static readonly FontFamily UiFont = new FontFamily("Segoe UI");
 
@@ -62,6 +70,97 @@ namespace VibeBar
                 return Theme.IsLight()
                     ? Color.FromArgb(52, 0, 0, 0)
                     : Color.FromArgb(58, 255, 255, 255);
+            }
+        }
+
+        internal static Color Separator
+        {
+            get
+            {
+                // 约 12% 不透明度，浅色用黑、深色用白，保持细而不刺眼。
+                return Theme.IsLight()
+                    ? Color.FromArgb(31, 0, 0, 0)
+                    : Color.FromArgb(31, 255, 255, 255);
+            }
+        }
+
+        internal static Color SegmentHover
+        {
+            get
+            {
+                return Theme.IsLight()
+                    ? Color.FromArgb(22, 0, 0, 0)
+                    : Color.FromArgb(32, 255, 255, 255);
+            }
+        }
+
+        internal static Color ButtonBackground
+        {
+            get
+            {
+                return Theme.IsLight()
+                    ? Color.FromArgb(18, 0, 0, 0)
+                    : Color.FromArgb(26, 255, 255, 255);
+            }
+        }
+
+        internal static Color ButtonHover
+        {
+            get
+            {
+                return Theme.IsLight()
+                    ? Color.FromArgb(32, 0, 0, 0)
+                    : Color.FromArgb(42, 255, 255, 255);
+            }
+        }
+
+        internal static Color ButtonPressed
+        {
+            get
+            {
+                return Theme.IsLight()
+                    ? Color.FromArgb(48, 0, 0, 0)
+                    : Color.FromArgb(60, 255, 255, 255);
+            }
+        }
+
+        internal static Color TextDisabled
+        {
+            get
+            {
+                return Theme.IsLight()
+                    ? Color.FromArgb(255, 166, 166, 166)
+                    : Color.FromArgb(255, 108, 108, 108);
+            }
+        }
+
+        internal static Color MenuBackground
+        {
+            get
+            {
+                return Theme.IsLight()
+                    ? Color.FromArgb(255, 247, 247, 247)
+                    : Color.FromArgb(255, 32, 32, 32);
+            }
+        }
+
+        internal static Color MenuHover
+        {
+            get
+            {
+                return Theme.IsLight()
+                    ? Color.FromArgb(255, 228, 228, 228)
+                    : Color.FromArgb(255, 60, 60, 60);
+            }
+        }
+
+        internal static Color MenuBorder
+        {
+            get
+            {
+                return Theme.IsLight()
+                    ? Color.FromArgb(255, 200, 200, 200)
+                    : Color.FromArgb(255, 66, 66, 66);
             }
         }
 

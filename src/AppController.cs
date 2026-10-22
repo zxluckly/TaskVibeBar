@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Text;
 using System.Windows;
 using System.Windows.Threading;
@@ -35,6 +37,7 @@ namespace VibeBar
         private SettingsWindow _settingsWindow;
         private string _visualSignature = string.Empty;
         private string _detailSignature = string.Empty;
+        private int _pinnedKind = -1;
         private bool _initialSettingsCheckDone;
         private bool _exiting;
 
@@ -85,17 +88,35 @@ namespace VibeBar
         {
             _strip = new TaskbarStrip(BuildVisuals());
             _strip.HoverChanged += OnStripHoverChanged;
+            _strip.SegmentClicked += OnSegmentClicked;
 
             _panel = new DetailPanel();
+            _panel.SettingsRequested += OnSettingsRequested;
             _panel.SetSections(BuildDetailSections());
 
             _host = new TaskbarHost(_strip);
+            _host.SetWidthLimits(_settings.Ui.MaxWidth, _settings.Ui.MinWidth);
 
             _tray = new TrayController();
             _tray.ToggleVisibilityRequested += OnToggleVisibilityRequested;
+            _tray.RefreshAllRequested += OnRefreshAllRequested;
+            _tray.PrivacyModeRequested += OnPrivacyModeRequested;
+            _tray.AutoStartRequested += OnAutoStartRequested;
             _tray.SettingsRequested += OnSettingsRequested;
+            _tray.OpenDataFolderRequested += OnOpenDataFolderRequested;
+            _tray.MenuOpening += OnTrayMenuOpening;
             _tray.ExitRequested += OnExitRequested;
             _tray.UpdateVisibility(_settings.General.ShowTaskbar);
+            _tray.UpdatePrivacy(_settings.General.PrivacyMode);
+
+            // 以注册表实际状态为准，避免程序移动目录后勾选状态与系统不一致。
+            bool autoStart = AutoStart.IsEnabled();
+            _tray.UpdateAutoStart(autoStart);
+            if (_settings.General.AutoStart != autoStart)
+            {
+                _settings.General.AutoStart = autoStart;
+                SaveSettings();
+            }
         }
 
         private void CreateProviders()
@@ -243,23 +264,165 @@ namespace VibeBar
 
             if (_quotaSnapshot != null)
             {
-                sections.Add(SegmentFactory.CreateQuotaDetail(
+                DetailSection quotaSection = SegmentFactory.CreateQuotaDetail(
                     _quotaSnapshot,
-                    _settings.General.PrivacyMode));
+                    _settings.General.PrivacyMode);
+                quotaSection.Actions = BuildQuotaActions();
+                sections.Add(quotaSection);
             }
 
             if (_gitSnapshot != null)
             {
-                sections.Add(SegmentFactory.CreateGitDetail(
+                DetailSection gitSection = SegmentFactory.CreateGitDetail(
                     _gitSnapshot,
-                    _settings.General.PrivacyMode));
+                    _settings.General.PrivacyMode);
+                gitSection.Actions = BuildGitActions(_gitSnapshot);
+                sections.Add(gitSection);
             }
 
-            sections.Add(SegmentFactory.CreateAgentDetail(
-                _agentSessions,
-                _settings.General.PrivacyMode));
+            // 无活动会话时不显示空白区块。
+            if (_agentSessions != null && _agentSessions.Length > 0)
+            {
+                DetailSection agentSection = SegmentFactory.CreateAgentDetail(
+                    _agentSessions,
+                    _settings.General.PrivacyMode);
+                agentSection.Actions = new DetailAction[0];
+                sections.Add(agentSection);
+            }
 
             return sections.ToArray();
+        }
+
+        private DetailAction[] BuildQuotaActions()
+        {
+            return new DetailAction[]
+            {
+                CreateAction("打开用量页", delegate { OpenUsagePage(); }),
+                CreateAction("刷新", delegate { RefreshQuotaNow(); })
+            };
+        }
+
+        private DetailAction[] BuildGitActions(GitSnapshot snapshot)
+        {
+            DetailAction openFolder = new DetailAction();
+            openFolder.Label = "打开目录";
+            string repoPath = snapshot == null ? null : snapshot.RepoPath;
+            if (!string.IsNullOrEmpty(repoPath))
+            {
+                string capturedPath = repoPath;
+                openFolder.Handler = delegate { OpenFolder(capturedPath); };
+            }
+
+            DetailAction copyBranch = new DetailAction();
+            copyBranch.Label = "复制分支";
+            string branch = snapshot == null ? null : snapshot.Branch;
+            if (!string.IsNullOrEmpty(branch)
+                && snapshot != null
+                && !snapshot.IsDetached)
+            {
+                string capturedBranch = branch;
+                copyBranch.Handler = delegate { CopyText(capturedBranch); };
+            }
+
+            return new DetailAction[] { openFolder, copyBranch };
+        }
+
+        private static DetailAction CreateAction(string label, Action handler)
+        {
+            DetailAction action = new DetailAction();
+            action.Label = label;
+            action.Handler = handler;
+            return action;
+        }
+
+        private void OpenUsagePage()
+        {
+            try
+            {
+                ProcessStartInfo info = new ProcessStartInfo(
+                    "https://platform.deepseek.com/usage");
+                info.UseShellExecute = true;
+                Process.Start(info);
+            }
+            catch (Exception exception)
+            {
+                Log.Error("打开用量页失败", exception);
+                if (_tray != null)
+                {
+                    _tray.ShowError("无法打开用量页，详见日志");
+                }
+            }
+        }
+
+        private void RefreshQuotaNow()
+        {
+            ProviderScheduler scheduler = _scheduler;
+            if (scheduler == null)
+            {
+                return;
+            }
+
+            try
+            {
+                scheduler.Refresh(DeepSeekQuotaProvider.ProviderIdValue);
+            }
+            catch (Exception exception)
+            {
+                Log.Write("手动刷新额度失败：" + exception.GetType().Name);
+            }
+        }
+
+        private void OpenFolder(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+            {
+                return;
+            }
+
+            try
+            {
+                if (!Directory.Exists(path))
+                {
+                    Log.Write("打开目录失败：目录不存在");
+                    if (_tray != null)
+                    {
+                        _tray.ShowError("目录不存在");
+                    }
+
+                    return;
+                }
+
+                Process.Start("explorer.exe", "\"" + path + "\"");
+            }
+            catch (Exception exception)
+            {
+                Log.Error("打开目录失败", exception);
+                if (_tray != null)
+                {
+                    _tray.ShowError("无法打开目录，详见日志");
+                }
+            }
+        }
+
+        private void CopyText(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+
+            try
+            {
+                Clipboard.SetText(text);
+            }
+            catch (Exception exception)
+            {
+                Log.Error("复制到剪贴板失败", exception);
+                if (_tray != null)
+                {
+                    _tray.ShowError("复制失败，详见日志");
+                }
+            }
         }
 
         private void OnClockTick(object sender, EventArgs e)
@@ -290,6 +453,19 @@ namespace VibeBar
             }
 
             RefreshVisuals(false);
+
+            if (_host != null && !_host.IsDestroyed
+                && _settings.General.ShowTaskbar)
+            {
+                try
+                {
+                    _host.RefreshLayout();
+                }
+                catch (Exception exception)
+                {
+                    Log.Write("刷新任务栏布局失败：" + exception.GetType().Name);
+                }
+            }
         }
 
         private void RecomputePeak(QuotaSnapshot snapshot)
@@ -568,6 +744,27 @@ namespace VibeBar
             }
         }
 
+        private void OnSegmentClicked(SegmentKind kind)
+        {
+            if (_exiting || !_settings.General.ShowTaskbar
+                || _panel == null || _host == null || _host.IsDestroyed)
+            {
+                return;
+            }
+
+            int kindValue = (int)kind;
+            if (_panel.IsPinned && _pinnedKind == kindValue)
+            {
+                // 再次点击同一段：取消固定，之后仍遵循鼠标移开 300ms 收起。
+                _panel.SetPinned(false);
+                _pinnedKind = -1;
+                return;
+            }
+
+            _panel.ShowPinned(_host.GetScreenBounds());
+            _pinnedKind = kindValue;
+        }
+
         private void OnToggleVisibilityRequested(object sender, EventArgs e)
         {
             if (_exiting)
@@ -589,6 +786,108 @@ namespace VibeBar
             }
 
             _dispatcher.BeginInvoke(new Action(ShowSettingsWindow));
+        }
+
+        private void OnRefreshAllRequested(object sender, EventArgs e)
+        {
+            if (_exiting)
+            {
+                return;
+            }
+
+            ProviderScheduler scheduler = _scheduler;
+            if (scheduler == null)
+            {
+                return;
+            }
+
+            try
+            {
+                scheduler.RefreshAll();
+            }
+            catch (Exception exception)
+            {
+                Log.Write("刷新全部失败：" + exception.GetType().Name);
+            }
+        }
+
+        private void OnPrivacyModeRequested(object sender, EventArgs e)
+        {
+            if (_exiting)
+            {
+                return;
+            }
+
+            _settings.General.PrivacyMode = !_settings.General.PrivacyMode;
+            SaveSettings();
+            _tray.UpdatePrivacy(_settings.General.PrivacyMode);
+            RefreshVisuals(true);
+        }
+
+        private void OnAutoStartRequested(object sender, EventArgs e)
+        {
+            if (_exiting)
+            {
+                return;
+            }
+
+            bool enabled = !AutoStart.IsEnabled();
+            string error = AutoStart.SetEnabled(enabled);
+            if (!string.IsNullOrEmpty(error))
+            {
+                Log.Write("设置开机自启失败：" + error);
+                _tray.ShowError(error);
+                _tray.UpdateAutoStart(AutoStart.IsEnabled());
+                return;
+            }
+
+            bool actual = AutoStart.IsEnabled();
+            _settings.General.AutoStart = actual;
+            SaveSettings();
+            _tray.UpdateAutoStart(actual);
+        }
+
+        private void OnOpenDataFolderRequested(object sender, EventArgs e)
+        {
+            if (_exiting)
+            {
+                return;
+            }
+
+            try
+            {
+                string folder = Path.Combine(
+                    Environment.GetFolderPath(
+                        Environment.SpecialFolder.ApplicationData),
+                    "VibeBar");
+                Directory.CreateDirectory(folder);
+                Process.Start("explorer.exe", "\"" + folder + "\"");
+            }
+            catch (Exception exception)
+            {
+                Log.Error("打开数据目录失败", exception);
+                _tray.ShowError("无法打开数据目录，详见日志");
+            }
+        }
+
+        private void OnTrayMenuOpening(object sender, EventArgs e)
+        {
+            if (_exiting)
+            {
+                return;
+            }
+
+            _tray.UpdateVisibility(_settings.General.ShowTaskbar);
+            _tray.UpdatePrivacy(_settings.General.PrivacyMode);
+
+            bool actual = AutoStart.IsEnabled();
+            if (_settings.General.AutoStart != actual)
+            {
+                _settings.General.AutoStart = actual;
+                SaveSettings();
+            }
+
+            _tray.UpdateAutoStart(actual);
         }
 
         private void MaybeShowInitialSettings()
@@ -634,6 +933,12 @@ namespace VibeBar
             window.Saved += OnSettingsSaved;
             _settingsWindow = window;
 
+            // 设置窗口需要正常激活；临时取消面板置顶，避免遮挡。
+            if (_panel != null)
+            {
+                _panel.SetTopmost(false);
+            }
+
             try
             {
                 window.ShowDialog();
@@ -646,6 +951,11 @@ namespace VibeBar
             {
                 window.Saved -= OnSettingsSaved;
                 _settingsWindow = null;
+
+                if (_panel != null)
+                {
+                    _panel.SetTopmost(true);
+                }
             }
         }
 
@@ -692,6 +1002,18 @@ namespace VibeBar
                 _agentProvider.UpdateStaleMinutes(_settings.Agent.StaleMinutes);
             }
 
+            if (_tray != null)
+            {
+                _tray.UpdatePrivacy(_settings.General.PrivacyMode);
+            }
+
+            if (_host != null && !_host.IsDestroyed)
+            {
+                _host.SetWidthLimits(
+                    _settings.Ui.MaxWidth,
+                    _settings.Ui.MinWidth);
+            }
+
             ApplyVisibility(_settings.General.ShowTaskbar);
             RefreshVisuals(true);
 
@@ -722,6 +1044,7 @@ namespace VibeBar
             if (!visible)
             {
                 _panel.HideNow();
+                _pinnedKind = -1;
             }
 
             _tray.UpdateVisibility(visible);
@@ -731,9 +1054,11 @@ namespace VibeBar
         {
             TaskbarStrip strip = new TaskbarStrip(BuildVisuals());
             strip.HoverChanged += OnStripHoverChanged;
+            strip.SegmentClicked += OnSegmentClicked;
 
             _strip = strip;
             _host = new TaskbarHost(strip);
+            _host.SetWidthLimits(_settings.Ui.MaxWidth, _settings.Ui.MinWidth);
             _panel.SetSections(BuildDetailSections());
             _visualSignature = string.Empty;
             _detailSignature = string.Empty;
@@ -761,6 +1086,7 @@ namespace VibeBar
             }
 
             _panel.HideNow();
+            _pinnedKind = -1;
 
             if (_host == null || _host.IsDestroyed)
             {
@@ -895,6 +1221,7 @@ namespace VibeBar
 
             if (_panel != null)
             {
+                _panel.SettingsRequested -= OnSettingsRequested;
                 _panel.HideNow();
                 _panel.DisposePanel();
                 _panel = null;
@@ -909,7 +1236,12 @@ namespace VibeBar
             if (_tray != null)
             {
                 _tray.ToggleVisibilityRequested -= OnToggleVisibilityRequested;
+                _tray.RefreshAllRequested -= OnRefreshAllRequested;
+                _tray.PrivacyModeRequested -= OnPrivacyModeRequested;
+                _tray.AutoStartRequested -= OnAutoStartRequested;
                 _tray.SettingsRequested -= OnSettingsRequested;
+                _tray.OpenDataFolderRequested -= OnOpenDataFolderRequested;
+                _tray.MenuOpening -= OnTrayMenuOpening;
                 _tray.ExitRequested -= OnExitRequested;
                 _tray.Dispose();
                 _tray = null;
@@ -926,6 +1258,12 @@ namespace VibeBar
                 {
                     // Explorer 重建期间窗口可能已被销毁。
                 }
+            }
+
+            if (_strip != null)
+            {
+                _strip.HoverChanged -= OnStripHoverChanged;
+                _strip.SegmentClicked -= OnSegmentClicked;
             }
 
             _host = null;

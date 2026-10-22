@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Effects;
 using System.Windows.Threading;
 using Drawing = System.Drawing;
 using Forms = System.Windows.Forms;
@@ -18,9 +20,12 @@ namespace VibeBar
     {
         private readonly Border _root;
         private readonly TextBlock _heading;
+        private readonly ScrollViewer _scroll;
         private readonly StackPanel _rows;
+        private readonly Button _settingsButton;
         private readonly List<TextBlock> _lineLabels = new List<TextBlock>();
         private readonly List<TextBlock> _titleLabels = new List<TextBlock>();
+        private readonly List<Button> _actionButtons = new List<Button>();
         private readonly DispatcherTimer _showTimer;
         private readonly DispatcherTimer _hideTimer;
         private readonly DispatcherTimer _visibilityTimer;
@@ -28,7 +33,10 @@ namespace VibeBar
         private DetailSection[] _sections = new DetailSection[0];
         private Drawing.Rectangle _anchor = Drawing.Rectangle.Empty;
         private bool _panelVisible;
+        private bool _pinned;
         private bool _disposed;
+
+        internal event EventHandler SettingsRequested;
 
         internal DetailPanel()
         {
@@ -41,29 +49,61 @@ namespace VibeBar
             ResizeMode = ResizeMode.NoResize;
             SizeToContent = SizeToContent.Height;
             WindowStartupLocation = WindowStartupLocation.Manual;
-            Width = UiTheme.PanelWidth;
+            Width = UiTheme.PanelWidth + UiTheme.PanelShadowMargin * 2.0;
             MaxHeight = UiTheme.PanelMaxHeight;
             Opacity = 0;
+            Focusable = false;
 
             _root = new Border();
-            _root.CornerRadius = new CornerRadius(10);
+            _root.CornerRadius = new CornerRadius(UiTheme.PanelCornerRadius);
             _root.BorderThickness = new Thickness(1);
             _root.Padding = new Thickness(16);
+            _root.Margin = new Thickness(UiTheme.PanelShadowMargin);
 
-            StackPanel stack = new StackPanel();
+            DropShadowEffect shadow = new DropShadowEffect();
+            shadow.Color = Colors.Black;
+            shadow.BlurRadius = 18;
+            shadow.Opacity = 0.22;
+            shadow.ShadowDepth = 2;
+            shadow.Direction = 270;
+            _root.Effect = shadow;
 
             _heading = new TextBlock();
             _heading.Text = "VibeBar";
             _heading.FontFamily = UiTheme.UiFont;
             _heading.FontSize = 14;
             _heading.FontWeight = FontWeights.SemiBold;
-            stack.Children.Add(_heading);
+            _heading.Margin = new Thickness(0, 0, 0, 10);
 
             _rows = new StackPanel();
-            _rows.Margin = new Thickness(0, 10, 0, 0);
-            stack.Children.Add(_rows);
 
-            _root.Child = stack;
+            _scroll = new ScrollViewer();
+            _scroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+            _scroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+            _scroll.PanningMode = PanningMode.VerticalOnly;
+            _scroll.Focusable = false;
+            _scroll.MaxHeight = UiTheme.PanelMaxHeight;
+            _scroll.Content = _rows;
+
+            _settingsButton = CreateButton("设置", delegate
+            {
+                EventHandler handler = SettingsRequested;
+                if (handler != null)
+                {
+                    handler(this, EventArgs.Empty);
+                }
+            });
+            _settingsButton.HorizontalAlignment = HorizontalAlignment.Left;
+            _settingsButton.Margin = new Thickness(0, 12, 0, 0);
+
+            DockPanel dock = new DockPanel();
+            DockPanel.SetDock(_heading, Dock.Top);
+            dock.Children.Add(_heading);
+            DockPanel.SetDock(_settingsButton, Dock.Bottom);
+            dock.Children.Add(_settingsButton);
+            dock.Children.Add(_scroll);
+
+            _root.Child = dock;
             Content = _root;
 
             MouseEnter += delegate { CancelHide(); };
@@ -93,7 +133,10 @@ namespace VibeBar
             _hideTimer.Tick += delegate
             {
                 _hideTimer.Stop();
-                HideNow();
+                if (!_pinned)
+                {
+                    HideNow();
+                }
             };
 
             _visibilityTimer = new DispatcherTimer();
@@ -114,6 +157,11 @@ namespace VibeBar
             };
 
             ApplyTheme();
+        }
+
+        internal bool IsPinned
+        {
+            get { return _pinned; }
         }
 
         protected override void OnSourceInitialized(EventArgs e)
@@ -137,6 +185,26 @@ namespace VibeBar
         {
             _sections = sections == null ? new DetailSection[0] : sections;
             RebuildRows();
+
+            if (_panelVisible)
+            {
+                Dispatcher.BeginInvoke(
+                    DispatcherPriority.Loaded,
+                    new Action(delegate
+                    {
+                        if (_disposed || !_panelVisible)
+                        {
+                            return;
+                        }
+
+                        UpdateLayout();
+                        IntPtr taskbar = NativeMethods.FindWindow("Shell_TrayWnd", null);
+                        if (IsTaskbarEffectivelyVisible(taskbar))
+                        {
+                            PositionPanel(taskbar);
+                        }
+                    }));
+            }
         }
 
         internal void ScheduleShow(Drawing.Rectangle anchor)
@@ -165,7 +233,7 @@ namespace VibeBar
             }
 
             _showTimer.Stop();
-            if (!_panelVisible)
+            if (!_panelVisible || _pinned)
             {
                 return;
             }
@@ -174,12 +242,50 @@ namespace VibeBar
             _hideTimer.Start();
         }
 
+        internal void SetPinned(bool pinned)
+        {
+            _pinned = pinned;
+            if (pinned)
+            {
+                _hideTimer.Stop();
+                _showTimer.Stop();
+            }
+        }
+
+        internal void ShowPinned(Drawing.Rectangle anchor)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _anchor = anchor;
+            _pinned = true;
+            _showTimer.Stop();
+            _hideTimer.Stop();
+
+            IntPtr taskbar = NativeMethods.FindWindow("Shell_TrayWnd", null);
+            if (IsTaskbarEffectivelyVisible(taskbar))
+            {
+                ShowPanel(taskbar);
+            }
+        }
+
+        internal void SetTopmost(bool topmost)
+        {
+            if (!_disposed)
+            {
+                Topmost = topmost;
+            }
+        }
+
         internal void HideNow()
         {
             _showTimer.Stop();
             _hideTimer.Stop();
             _visibilityTimer.Stop();
             _panelVisible = false;
+            _pinned = false;
 
             if (_disposed)
             {
@@ -207,6 +313,13 @@ namespace VibeBar
                 _lineLabels[index].Foreground =
                     new SolidColorBrush(UiTheme.TextSecondary);
             }
+
+            ApplyButtonTheme(_settingsButton);
+
+            for (int index = 0; index < _actionButtons.Count; index++)
+            {
+                ApplyButtonTheme(_actionButtons[index]);
+            }
         }
 
         internal void DisposePanel()
@@ -221,6 +334,7 @@ namespace VibeBar
             _hideTimer.Stop();
             _visibilityTimer.Stop();
             _panelVisible = false;
+            _pinned = false;
 
             try
             {
@@ -384,6 +498,7 @@ namespace VibeBar
             _rows.Children.Clear();
             _lineLabels.Clear();
             _titleLabels.Clear();
+            _actionButtons.Clear();
 
             if (_sections.Length == 0)
             {
@@ -411,10 +526,14 @@ namespace VibeBar
 
                 bool hasTitle = !string.IsNullOrEmpty(section.Title);
                 bool hasLines = section.Lines != null && section.Lines.Length > 0;
-                if (!hasTitle && !hasLines)
+                bool hasActions = section.Actions != null && section.Actions.Length > 0;
+                if (!hasTitle && !hasLines && !hasActions)
                 {
                     continue;
                 }
+
+                StackPanel sectionPanel = new StackPanel();
+                sectionPanel.Margin = new Thickness(0, firstSection ? 0 : 12, 0, 0);
 
                 if (hasTitle)
                 {
@@ -423,14 +542,10 @@ namespace VibeBar
                     title.FontFamily = UiTheme.UiFont;
                     title.FontSize = 13.5;
                     title.FontWeight = FontWeights.SemiBold;
-                    title.Margin = new Thickness(
-                        0,
-                        firstSection ? 0 : 12,
-                        0,
-                        4);
+                    title.Margin = new Thickness(0, 0, 0, 4);
                     title.TextTrimming = TextTrimming.CharacterEllipsis;
 
-                    _rows.Children.Add(title);
+                    sectionPanel.Children.Add(title);
                     _titleLabels.Add(title);
                 }
 
@@ -452,15 +567,171 @@ namespace VibeBar
                         line.TextWrapping = TextWrapping.Wrap;
                         line.TextTrimming = TextTrimming.CharacterEllipsis;
 
-                        _rows.Children.Add(line);
+                        sectionPanel.Children.Add(line);
                         _lineLabels.Add(line);
                     }
                 }
 
+                if (hasActions)
+                {
+                    WrapPanel actionRow = new WrapPanel();
+                    actionRow.Orientation = Orientation.Horizontal;
+                    actionRow.Margin = new Thickness(0, 8, 0, 0);
+
+                    for (int actionIndex = 0;
+                        actionIndex < section.Actions.Length;
+                        actionIndex++)
+                    {
+                        DetailAction action = section.Actions[actionIndex];
+                        if (action == null || string.IsNullOrEmpty(action.Label))
+                        {
+                            continue;
+                        }
+
+                        Button button = CreateButton(action.Label, action.Handler);
+                        _actionButtons.Add(button);
+                        actionRow.Children.Add(button);
+                    }
+
+                    if (actionRow.Children.Count > 0)
+                    {
+                        sectionPanel.Children.Add(actionRow);
+                    }
+                }
+
+                _rows.Children.Add(sectionPanel);
                 firstSection = false;
             }
 
+            if (firstSection)
+            {
+                TextBlock empty = new TextBlock();
+                empty.Text = "暂无数据";
+                empty.FontFamily = UiTheme.UiFont;
+                empty.FontSize = 13;
+                empty.Margin = new Thickness(0, 2, 0, 2);
+                _rows.Children.Add(empty);
+                _lineLabels.Add(empty);
+            }
+
             ApplyTheme();
+        }
+
+        private Button CreateButton(string label, Action handler)
+        {
+            Button button = new Button();
+            button.Content = label;
+            button.FontFamily = UiTheme.UiFont;
+            button.FontSize = 12.5;
+            button.Padding = new Thickness(10, 4, 10, 4);
+            button.Margin = new Thickness(0, 0, 8, 0);
+            button.Focusable = false;
+            button.IsTabStop = false;
+            button.Template = CreateButtonTemplate();
+
+            if (handler == null)
+            {
+                button.IsEnabled = false;
+                button.Cursor = Cursors.Arrow;
+            }
+            else
+            {
+                button.Cursor = Cursors.Hand;
+                button.Click += delegate
+                {
+                    try
+                    {
+                        handler();
+                    }
+                    catch (Exception exception)
+                    {
+                        Log.Error("详情面板动作失败", exception);
+                    }
+                };
+                button.MouseEnter += delegate
+                {
+                    SetButtonBackground(button, UiTheme.ButtonHover);
+                };
+                button.MouseLeave += delegate
+                {
+                    SetButtonBackground(button, UiTheme.ButtonBackground);
+                };
+                button.PreviewMouseLeftButtonDown += delegate
+                {
+                    SetButtonBackground(button, UiTheme.ButtonPressed);
+                };
+                button.PreviewMouseLeftButtonUp += delegate
+                {
+                    SetButtonBackground(button, UiTheme.ButtonHover);
+                };
+            }
+
+            ApplyButtonTheme(button);
+            return button;
+        }
+
+        private static void SetButtonBackground(Button button, Color color)
+        {
+            if (button == null || !button.IsEnabled)
+            {
+                return;
+            }
+
+            button.Background = new SolidColorBrush(color);
+        }
+
+        private static void ApplyButtonTheme(Button button)
+        {
+            if (button == null)
+            {
+                return;
+            }
+
+            bool enabled = button.IsEnabled;
+            button.Background = new SolidColorBrush(
+                enabled ? UiTheme.ButtonBackground : Colors.Transparent);
+            button.BorderBrush = new SolidColorBrush(UiTheme.Border);
+            button.BorderThickness = new Thickness(1);
+            button.Foreground = new SolidColorBrush(
+                enabled ? UiTheme.TextPrimary : UiTheme.TextDisabled);
+            button.Opacity = enabled ? 1.0 : 0.55;
+        }
+
+        private static ControlTemplate CreateButtonTemplate()
+        {
+            ControlTemplate template = new ControlTemplate(typeof(Button));
+
+            FrameworkElementFactory border = new FrameworkElementFactory(typeof(Border));
+            border.Name = "Chrome";
+            border.SetValue(
+                Border.CornerRadiusProperty,
+                new CornerRadius(6));
+            border.SetValue(
+                Border.BackgroundProperty,
+                new TemplateBindingExtension(Control.BackgroundProperty));
+            border.SetValue(
+                Border.BorderBrushProperty,
+                new TemplateBindingExtension(Control.BorderBrushProperty));
+            border.SetValue(
+                Border.BorderThicknessProperty,
+                new TemplateBindingExtension(Control.BorderThicknessProperty));
+            border.SetValue(Border.SnapsToDevicePixelsProperty, true);
+
+            FrameworkElementFactory presenter =
+                new FrameworkElementFactory(typeof(ContentPresenter));
+            presenter.SetValue(
+                ContentPresenter.HorizontalAlignmentProperty,
+                HorizontalAlignment.Center);
+            presenter.SetValue(
+                ContentPresenter.VerticalAlignmentProperty,
+                VerticalAlignment.Center);
+            presenter.SetValue(
+                ContentPresenter.MarginProperty,
+                new TemplateBindingExtension(Control.PaddingProperty));
+
+            border.AppendChild(presenter);
+            template.VisualTree = border;
+            return template;
         }
     }
 }

@@ -19,6 +19,8 @@ namespace VibeBar
         private bool _destroyed;
         private IntPtr _taskbar;
         private HwndSource _source;
+        private int _maxWidth = 420;
+        private int _minWidth = 120;
 
         internal TaskbarHost(TaskbarStrip strip)
         {
@@ -87,6 +89,43 @@ namespace VibeBar
             if (_enabled && !_destroyed)
             {
                 AttachToTaskbar();
+            }
+        }
+
+        internal void SetWidthLimits(int maxWidth, int minWidth)
+        {
+            if (maxWidth < 1)
+            {
+                maxWidth = 420;
+            }
+
+            if (minWidth < 1)
+            {
+                minWidth = 120;
+            }
+
+            if (minWidth > maxWidth)
+            {
+                minWidth = maxWidth;
+            }
+
+            _maxWidth = maxWidth;
+            _minWidth = minWidth;
+
+            if (_enabled && !_destroyed)
+            {
+                UpdatePosition();
+            }
+        }
+
+        /// <summary>
+        /// 供 1s 定时器调用：任务栏/通知区宽度变化时重新折叠或恢复显示。
+        /// </summary>
+        internal void RefreshLayout()
+        {
+            if (_enabled && !_destroyed)
+            {
+                UpdatePosition();
             }
         }
 
@@ -261,6 +300,48 @@ namespace VibeBar
                 }
             }
 
+            DpiScale dpi = VisualTreeHelper.GetDpi(this);
+            double scaleX = dpi.DpiScaleX <= 0 ? 1.0 : dpi.DpiScaleX;
+            double scaleY = dpi.DpiScaleY <= 0 ? 1.0 : dpi.DpiScaleY;
+
+            // 可用宽度 = 通知区左缘 - 8 - 任务栏左缘 - 16（物理像素）。
+            int availablePixels = rightEdge - taskbarRect.Left - 16;
+            if (availablePixels < 0)
+            {
+                availablePixels = 0;
+            }
+
+            double availableDip = availablePixels / scaleX;
+            if (availableDip > _maxWidth)
+            {
+                availableDip = _maxWidth;
+            }
+
+            if (availableDip < 0)
+            {
+                availableDip = 0;
+            }
+
+            // 折叠必须在测量窗口宽度之前完成；低于 minWidth 时只保留额度。
+            _strip.SetAvailableWidth(availableDip, _minWidth);
+
+            if (_strip.ContentHidden)
+            {
+                if (IsVisible)
+                {
+                    Hide();
+                }
+
+                return;
+            }
+
+            if (!IsVisible)
+            {
+                Show();
+            }
+
+            UpdateLayout();
+
             double actualWidth = ActualWidth;
             double actualHeight = ActualHeight;
             if (double.IsNaN(actualWidth) || double.IsNaN(actualHeight)
@@ -268,10 +349,6 @@ namespace VibeBar
             {
                 return;
             }
-
-            DpiScale dpi = VisualTreeHelper.GetDpi(this);
-            double scaleX = dpi.DpiScaleX <= 0 ? 1.0 : dpi.DpiScaleX;
-            double scaleY = dpi.DpiScaleY <= 0 ? 1.0 : dpi.DpiScaleY;
 
             int width = (int)Math.Ceiling(actualWidth * scaleX);
             int height = (int)Math.Ceiling(actualHeight * scaleY);
