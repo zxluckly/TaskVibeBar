@@ -80,7 +80,9 @@ namespace VibeBar
         public int MaxWidth = 420;
         public int MinWidth = 120;
 
-        // 显示区域：距托盘左缘的水平偏移（px）与模块显隐。
+        // 显示区域：吸附方向、水平偏移（px）与模块显隐。
+        // Anchor = "right" 时偏移从托盘左缘算；"left" 时从任务栏左缘算。
+        public string Anchor = "right";
         public int OffsetX = 8;
         public bool ShowQuota = true;
         public bool ShowGit = true;
@@ -116,6 +118,18 @@ namespace VibeBar
                 settings.MinWidth = settings.MaxWidth;
             }
 
+            if (string.Equals(
+                settings.Anchor,
+                "left",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                settings.Anchor = "left";
+            }
+            else
+            {
+                settings.Anchor = "right";
+            }
+
             if (settings.OffsetX < 0)
             {
                 settings.OffsetX = 0;
@@ -139,6 +153,17 @@ namespace VibeBar
             if (!settings.ShowQuota && !settings.ShowGit && !settings.ShowAgent)
             {
                 settings.ShowQuota = true;
+            }
+        }
+
+        internal bool IsLeftAnchor
+        {
+            get
+            {
+                return string.Equals(
+                    Anchor,
+                    "left",
+                    StringComparison.OrdinalIgnoreCase);
             }
         }
 
@@ -305,6 +330,7 @@ namespace VibeBar
                 Dictionary<string, object> ui = EnsureObject(_root, "ui");
                 ui["maxWidth"] = settings.Ui.MaxWidth;
                 ui["minWidth"] = settings.Ui.MinWidth;
+                ui["anchor"] = settings.Ui.Anchor;
                 ui["offsetX"] = settings.Ui.OffsetX;
                 ui["showQuota"] = settings.Ui.ShowQuota;
                 ui["showGit"] = settings.Ui.ShowGit;
@@ -383,6 +409,7 @@ namespace VibeBar
             {
                 settings.Ui.MaxWidth = GetInt(ui, "maxWidth", 420);
                 settings.Ui.MinWidth = GetInt(ui, "minWidth", 120);
+                settings.Ui.Anchor = GetString(ui, "anchor", "right");
                 settings.Ui.OffsetX = GetInt(ui, "offsetX", 8);
                 settings.Ui.ShowQuota = GetBool(ui, "showQuota", true);
                 settings.Ui.ShowGit = GetBool(ui, "showGit", true);

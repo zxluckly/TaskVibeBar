@@ -16,7 +16,7 @@ VibeBar 是一个驻留在 Windows 任务栏通知区左侧的轻量状态条，
 | Claude 会话 | 通过 Hooks 显示空闲、思考中、工具、等待确认、完成；等待确认时呼吸提示 |
 | 详情面板 | 额度、Git、会话分区；无数据区块自动隐藏；内容过长可滚动；按钮操作不抢焦点 |
 | 宽度折叠 | 任务栏空间不足时按 Git → 非等待会话 → 额度的顺序折叠为 `+N`，面板仍显示全部 |
-| 显示区域 | 设置中可调距托盘偏移、最大宽度，以及额度/Git/会话三个模块的显隐 |
+| 显示区域 | 设置中可选靠左/靠右吸附，再调水平偏移与最大宽度，以及额度/Git/会话三个模块的显隐 |
 | 悬停背景 | 设置中可选跟随主题色，或自定义 `#RRGGBB` + 0–100% 透明度，带实时预览 |
 | 隐私模式 | 金额显示为 `¥•••`，仓库名/分支/项目名显示为 `…`；托盘一键切换并持久化 |
 | 开机自启 | 写入当前用户 `HKCU\...\Run\VibeBar`，托盘勾选状态与注册表一致 |
@@ -96,6 +96,7 @@ bin\VibeBar.Cli.exe
   "ui": {
     "maxWidth": 420,
     "minWidth": 120,
+    "anchor": "right",
     "offsetX": 8,
     "showQuota": true,
     "showGit": true,
@@ -108,7 +109,7 @@ bin\VibeBar.Cli.exe
 
 - 未知键在保存时会保留。
 - `quota.refreshSeconds` 最低 60 秒；`git.pollSeconds` 最低 10 秒。
-- `ui.offsetX` 为距托盘左缘的偏移（px，0–400）；`ui.hoverColor` 为空表示跟随主题色，格式 `#RRGGBB`；`ui.hoverOpacity` 为 0–255（0 表示悬停也完全透明）。
+- `ui.anchor` 为 `right`（靠右吸附，偏移从托盘左缘算）或 `left`（靠左吸附，偏移从任务栏左缘算）；`ui.offsetX` 为 0–400 px；`ui.hoverColor` 为空表示跟随主题色，格式 `#RRGGBB`；`ui.hoverOpacity` 为 0–255（0 表示悬停也完全透明）。
 - API Key 有两种来源：
   1. 在设置窗口的「API Key」中填写，保存到 `secrets.dat`（DPAPI 加密）；
   2. 勾选「从 Claude Code 配置读取 Key」，运行时从 `%USERPROFILE%\.claude\settings.json` 的 `env.ANTHROPIC_AUTH_TOKEN` 读取，只在内存中使用。

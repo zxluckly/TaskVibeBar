@@ -99,6 +99,7 @@ namespace VibeBar
 
             _host = new TaskbarHost(_strip);
             _host.SetWidthLimits(_settings.Ui.MaxWidth, _settings.Ui.MinWidth);
+            _host.SetAnchor(_settings.Ui.IsLeftAnchor);
             _host.SetOffsetX(_settings.Ui.OffsetX);
 
             _tray = new TrayController();
@@ -1047,6 +1048,7 @@ namespace VibeBar
                 _host.SetWidthLimits(
                     _settings.Ui.MaxWidth,
                     _settings.Ui.MinWidth);
+                _host.SetAnchor(_settings.Ui.IsLeftAnchor);
                 _host.SetOffsetX(_settings.Ui.OffsetX);
                 _host.RefreshLayout();
             }
@@ -1111,6 +1113,7 @@ namespace VibeBar
             _strip = strip;
             _host = new TaskbarHost(strip);
             _host.SetWidthLimits(_settings.Ui.MaxWidth, _settings.Ui.MinWidth);
+            _host.SetAnchor(_settings.Ui.IsLeftAnchor);
             _host.SetOffsetX(_settings.Ui.OffsetX);
             _panel.SetSections(BuildDetailSections());
             _visualSignature = string.Empty;

@@ -27,6 +27,8 @@ namespace VibeBar
         private readonly CheckBox _privacyBox;
         private readonly CheckBox _claudeKeyBox;
 
+        private readonly ComboBox _anchorBox;
+        private readonly TextBlock _offsetLabel;
         private readonly TextBox _offsetBox;
         private readonly TextBox _maxWidthBox;
         private readonly CheckBox _showQuotaBox;
@@ -109,6 +111,32 @@ namespace VibeBar
             _claudeKeyBox.Content = "从 Claude Code 配置读取 Key（ANTHROPIC_AUTH_TOKEN）";
             _claudeKeyBox.IsChecked = settings.Quota.ReadKeyFromClaudeSettings;
             _claudeKeyBox.Margin = new Thickness(0, 8, 0, 0);
+
+            _anchorBox = new ComboBox();
+            _anchorBox.Height = 30;
+            _anchorBox.Width = 180;
+            _anchorBox.HorizontalAlignment = HorizontalAlignment.Left;
+
+            ComboBoxItem rightAnchor = new ComboBoxItem();
+            rightAnchor.Content = "靠右（托盘左侧）";
+            rightAnchor.Tag = "right";
+            _anchorBox.Items.Add(rightAnchor);
+
+            ComboBoxItem leftAnchor = new ComboBoxItem();
+            leftAnchor.Content = "靠左（任务栏左侧）";
+            leftAnchor.Tag = "left";
+            _anchorBox.Items.Add(leftAnchor);
+
+            SelectAnchor(settings.Ui.Anchor);
+            _anchorBox.SelectionChanged += delegate
+            {
+                UpdateOffsetLabel();
+            };
+
+            _offsetLabel = new TextBlock();
+            _offsetLabel.Width = 150;
+            _offsetLabel.VerticalAlignment = VerticalAlignment.Center;
+            UpdateOffsetLabel();
 
             _offsetBox = new TextBox();
             _offsetBox.Height = 28;
@@ -255,7 +283,15 @@ namespace VibeBar
             root.Children.Add(_claudeKeyBox);
 
             AddLabel(root, "任务栏显示区域");
-            root.Children.Add(CreateInlineRow("距托盘偏移（px）", _offsetBox));
+            root.Children.Add(CreateInlineRow("吸附方式", _anchorBox));
+
+            StackPanel offsetRow = new StackPanel();
+            offsetRow.Orientation = Orientation.Horizontal;
+            offsetRow.Margin = new Thickness(0, 6, 0, 0);
+            offsetRow.Children.Add(_offsetLabel);
+            offsetRow.Children.Add(_offsetBox);
+            root.Children.Add(offsetRow);
+
             root.Children.Add(CreateInlineRow("最大宽度（px）", _maxWidthBox));
 
             StackPanel moduleRow = new StackPanel();
@@ -270,7 +306,7 @@ namespace VibeBar
             moduleRow.Children.Add(_showGitBox);
             moduleRow.Children.Add(_showAgentBox);
             root.Children.Add(moduleRow);
-            AddHint(root, "偏移越大越靠左；宽度不足时自动折叠为 +N。至少保留一个模块。");
+            AddHint(root, "靠右时偏移从托盘左缘算，靠左时从任务栏左缘算；宽度不足时自动折叠为 +N。至少保留一个模块。");
 
             AddLabel(root, "悬停背景");
             root.Children.Add(_hoverThemeBox);
@@ -416,6 +452,53 @@ namespace VibeBar
             }
 
             return 60;
+        }
+
+        private void SelectAnchor(string anchor)
+        {
+            string target = string.Equals(
+                anchor,
+                "left",
+                StringComparison.OrdinalIgnoreCase)
+                ? "left"
+                : "right";
+
+            for (int index = 0; index < _anchorBox.Items.Count; index++)
+            {
+                ComboBoxItem item = _anchorBox.Items[index] as ComboBoxItem;
+                if (item != null
+                    && string.Equals(item.Tag as string, target, StringComparison.Ordinal))
+                {
+                    _anchorBox.SelectedIndex = index;
+                    return;
+                }
+            }
+
+            _anchorBox.SelectedIndex = 0;
+        }
+
+        private string GetSelectedAnchor()
+        {
+            ComboBoxItem item = _anchorBox.SelectedItem as ComboBoxItem;
+            string anchor = item == null ? null : item.Tag as string;
+            return string.Equals(anchor, "left", StringComparison.Ordinal)
+                ? "left"
+                : "right";
+        }
+
+        private void UpdateOffsetLabel()
+        {
+            if (_offsetLabel == null)
+            {
+                return;
+            }
+
+            _offsetLabel.Text = string.Equals(
+                GetSelectedAnchor(),
+                "left",
+                StringComparison.Ordinal)
+                ? "距任务栏左侧偏移（px）"
+                : "距托盘偏移（px）";
         }
 
         private static StackPanel CreateInlineRow(string labelText, UIElement control)
@@ -832,6 +915,7 @@ namespace VibeBar
                 return;
             }
 
+            _settings.Ui.Anchor = GetSelectedAnchor();
             _settings.Ui.OffsetX = offsetX;
             _settings.Ui.MaxWidth = maxWidth;
             _settings.Ui.ShowQuota = showQuota;

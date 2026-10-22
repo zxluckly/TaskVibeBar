@@ -22,6 +22,7 @@ namespace VibeBar
         private int _maxWidth = 420;
         private int _minWidth = 120;
         private int _offsetX = 8;
+        private bool _anchorLeft;
 
         internal TaskbarHost(TaskbarStrip strip)
         {
@@ -124,6 +125,15 @@ namespace VibeBar
         {
             _destroyed = true;
             _taskbar = IntPtr.Zero;
+        }
+
+        internal void SetAnchor(bool anchorLeft)
+        {
+            _anchorLeft = anchorLeft;
+            if (_enabled && !_destroyed)
+            {
+                UpdatePosition();
+            }
         }
 
         internal void SetOffsetX(int offsetX)
@@ -342,6 +352,8 @@ namespace VibeBar
                 "TrayNotifyWnd",
                 null);
 
+            // 靠右：右缘从托盘左缘往左让出 offsetX；靠左：左缘从任务栏左缘往右让出 offsetX。
+            int trayGap = _anchorLeft ? 8 : _offsetX;
             int rightEdge = taskbarRect.Right - 220;
             if (notify != IntPtr.Zero)
             {
@@ -349,16 +361,17 @@ namespace VibeBar
                 if (NativeMethods.GetWindowRect(notify, out notifyRect)
                     && notifyRect.Left > taskbarRect.Left)
                 {
-                    rightEdge = notifyRect.Left - _offsetX;
+                    rightEdge = notifyRect.Left - trayGap;
                 }
             }
+
+            int leftLimit = taskbarRect.Left + (_anchorLeft ? _offsetX : 8);
 
             DpiScale dpi = VisualTreeHelper.GetDpi(this);
             double scaleX = dpi.DpiScaleX <= 0 ? 1.0 : dpi.DpiScaleX;
             double scaleY = dpi.DpiScaleY <= 0 ? 1.0 : dpi.DpiScaleY;
 
-            // 可用宽度 = 通知区左缘 - 8 - 任务栏左缘 - 16（物理像素）。
-            int availablePixels = rightEdge - taskbarRect.Left - 16;
+            int availablePixels = rightEdge - leftLimit;
             if (availablePixels < 0)
             {
                 availablePixels = 0;
@@ -420,10 +433,15 @@ namespace VibeBar
             }
 
             int taskbarHeight = taskbarRect.Bottom - taskbarRect.Top;
-            int x = rightEdge - width;
+            int x = _anchorLeft ? leftLimit : rightEdge - width;
             if (x < taskbarRect.Left + 8)
             {
                 x = taskbarRect.Left + 8;
+            }
+
+            if (x + width > rightEdge && rightEdge - width >= taskbarRect.Left + 8)
+            {
+                x = rightEdge - width;
             }
 
             int y = taskbarRect.Top + (taskbarHeight - height) / 2;
