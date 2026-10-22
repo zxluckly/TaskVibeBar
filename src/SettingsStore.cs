@@ -196,6 +196,8 @@ namespace VibeBar
                 peakValley.Remove("offPeakEnd");
 
                 Dictionary<string, object> git = EnsureObject(_root, "git");
+                settings.Git.PollSeconds =
+                    NormalizeGitPollSeconds(settings.Git.PollSeconds);
                 git["repoPath"] = settings.Git.RepoPath;
                 git["includeUntracked"] = settings.Git.IncludeUntracked;
                 git["pollSeconds"] = settings.Git.PollSeconds;
@@ -263,7 +265,8 @@ namespace VibeBar
             {
                 settings.Git.RepoPath = GetString(git, "repoPath", string.Empty);
                 settings.Git.IncludeUntracked = GetBool(git, "includeUntracked", true);
-                settings.Git.PollSeconds = GetInt(git, "pollSeconds", 30);
+                settings.Git.PollSeconds =
+                    NormalizeGitPollSeconds(GetInt(git, "pollSeconds", 30));
             }
 
             Dictionary<string, object> agent = GetObject(root, "agent");
@@ -387,6 +390,28 @@ namespace VibeBar
             }
 
             return result;
+        }
+
+        private static int NormalizeGitPollSeconds(int seconds)
+        {
+            if (seconds <= 0)
+            {
+                return 30;
+            }
+
+            if (seconds < 10)
+            {
+                Log.Write("设置项 git.pollSeconds 小于 10，已按 10 处理");
+                return 10;
+            }
+
+            if (seconds > 86400)
+            {
+                Log.Write("设置项 git.pollSeconds 大于 86400，已按 86400 处理");
+                return 86400;
+            }
+
+            return seconds;
         }
 
         private static int NormalizeRefreshSeconds(int seconds)

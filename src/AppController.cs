@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text;
 using System.Windows;
 using System.Windows.Threading;
@@ -23,7 +24,9 @@ namespace VibeBar
         private TrayController _tray;
         private ProviderScheduler _scheduler;
         private DeepSeekQuotaProvider _quotaProvider;
+        private GitProvider _gitProvider;
         private QuotaSnapshot _quotaSnapshot;
+        private GitSnapshot _gitSnapshot;
         private DispatcherTimer _clockTimer;
         private SettingsWindow _settingsWindow;
         private string _visualSignature = string.Empty;
@@ -98,10 +101,40 @@ namespace VibeBar
                 _settings.Quota.ReadKeyFromClaudeSettings,
                 QuotaPollSeconds());
 
+            _gitProvider = new GitProvider(
+                _settings.Git.RepoPath,
+                _settings.Git.IncludeUntracked,
+                _settings.Git.PollSeconds);
+            _gitProvider.RefreshSuggested += OnGitRefreshSuggested;
+
             _scheduler = new ProviderScheduler();
             _scheduler.ResultAvailable += OnProviderResult;
             _scheduler.Register(_quotaProvider);
+            _scheduler.Register(_gitProvider);
             _scheduler.Start();
+        }
+
+        private void OnGitRefreshSuggested()
+        {
+            if (_exiting)
+            {
+                return;
+            }
+
+            ProviderScheduler scheduler = _scheduler;
+            if (scheduler == null)
+            {
+                return;
+            }
+
+            try
+            {
+                scheduler.Refresh(GitProvider.ProviderIdValue);
+            }
+            catch (Exception exception)
+            {
+                Log.Write("Git 刷新请求失败：" + exception.GetType().Name);
+            }
         }
 
         private void StartClock()
@@ -133,24 +166,32 @@ namespace VibeBar
             visuals[0] = SegmentFactory.CreateQuota(
                 _quotaSnapshot,
                 _settings.General.PrivacyMode);
-            visuals[1] = SegmentFactory.CreateGitPlaceholder();
+            visuals[1] = SegmentFactory.CreateGit(
+                _gitSnapshot,
+                _settings.General.PrivacyMode);
             visuals[2] = SegmentFactory.CreateAgentPlaceholder();
             return visuals;
         }
 
         private DetailSection[] BuildDetailSections()
         {
-            if (_quotaSnapshot == null)
+            List<DetailSection> sections = new List<DetailSection>();
+
+            if (_quotaSnapshot != null)
             {
-                return new DetailSection[0];
+                sections.Add(SegmentFactory.CreateQuotaDetail(
+                    _quotaSnapshot,
+                    _settings.General.PrivacyMode));
             }
 
-            return new DetailSection[]
+            if (_gitSnapshot != null)
             {
-                SegmentFactory.CreateQuotaDetail(
-                    _quotaSnapshot,
-                    _settings.General.PrivacyMode)
-            };
+                sections.Add(SegmentFactory.CreateGitDetail(
+                    _gitSnapshot,
+                    _settings.General.PrivacyMode));
+            }
+
+            return sections.ToArray();
         }
 
         private void OnClockTick(object sender, EventArgs e)
@@ -304,14 +345,28 @@ namespace VibeBar
                 return;
             }
 
-            if (!string.Equals(
+            if (string.Equals(
                 result.ProviderId,
                 DeepSeekQuotaProvider.ProviderIdValue,
                 StringComparison.Ordinal))
             {
+                ApplyQuotaResult(result);
+                RefreshVisuals(true);
                 return;
             }
 
+            if (string.Equals(
+                result.ProviderId,
+                GitProvider.ProviderIdValue,
+                StringComparison.Ordinal))
+            {
+                ApplyGitResult(result);
+                RefreshVisuals(true);
+            }
+        }
+
+        private void ApplyQuotaResult(ProviderResult result)
+        {
             QuotaSnapshot snapshot = result.Snapshot as QuotaSnapshot;
             if (snapshot != null)
             {
@@ -336,7 +391,39 @@ namespace VibeBar
             }
 
             RecomputePeak(_quotaSnapshot);
-            RefreshVisuals(true);
+        }
+
+        private void ApplyGitResult(ProviderResult result)
+        {
+            GitSnapshot snapshot = result.Snapshot as GitSnapshot;
+            if (snapshot != null)
+            {
+                _gitSnapshot = snapshot;
+                return;
+            }
+
+            // 调度器兜底错误（超时/异常）没有快照，构造一个错误态，
+            // 段显示「Git —」，面板给出原因，绝不显示 0。
+            if (_gitSnapshot == null)
+            {
+                _gitSnapshot = new GitSnapshot();
+                _gitSnapshot.RepoPath = _settings.Git.RepoPath == null
+                    ? string.Empty
+                    : _settings.Git.RepoPath;
+                _gitSnapshot.RepoName = GitProvider.GetRepoName(_gitSnapshot.RepoPath);
+                _gitSnapshot.Branch = string.Empty;
+                _gitSnapshot.Operation = string.Empty;
+            }
+
+            _gitSnapshot.Health = result.Health == SnapshotHealth.Live
+                ? SnapshotHealth.Error
+                : result.Health;
+            _gitSnapshot.Error = string.IsNullOrEmpty(result.Error)
+                ? "数据源异常"
+                : result.Error;
+            _gitSnapshot.UpdatedUtc = result.UpdatedUtc == default(DateTime)
+                ? DateTime.UtcNow
+                : result.UpdatedUtc;
         }
 
         private static QuotaSnapshot CreateSchedulerErrorSnapshot(string error)
@@ -487,12 +574,21 @@ namespace VibeBar
                 RecomputePeak(_quotaSnapshot);
             }
 
+            if (_gitProvider != null)
+            {
+                _gitProvider.UpdateSettings(
+                    _settings.Git.RepoPath,
+                    _settings.Git.IncludeUntracked,
+                    _settings.Git.PollSeconds);
+            }
+
             ApplyVisibility(_settings.General.ShowTaskbar);
             RefreshVisuals(true);
 
             if (_scheduler != null)
             {
                 _scheduler.Refresh(DeepSeekQuotaProvider.ProviderIdValue);
+                _scheduler.Refresh(GitProvider.ProviderIdValue);
             }
         }
 
@@ -651,6 +747,11 @@ namespace VibeBar
                 _settingsWindow = null;
             }
 
+            if (_gitProvider != null)
+            {
+                _gitProvider.RefreshSuggested -= OnGitRefreshSuggested;
+            }
+
             if (_scheduler != null)
             {
                 _scheduler.ResultAvailable -= OnProviderResult;
@@ -660,6 +761,8 @@ namespace VibeBar
 
             _quotaProvider = null;
             _quotaSnapshot = null;
+            _gitProvider = null;
+            _gitSnapshot = null;
 
             Theme.Changed -= OnThemeChanged;
             Theme.Shutdown();
