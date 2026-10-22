@@ -16,6 +16,7 @@ namespace VibeBar
     {
         private readonly AppSettings _settings;
         private readonly SettingsStore _settingsStore;
+        private readonly HookInstaller _hookInstaller;
 
         private readonly PasswordBox _apiKeyBox;
         private readonly TextBox _baseUrlBox;
@@ -24,6 +25,7 @@ namespace VibeBar
         private readonly CheckBox _showTaskbarBox;
         private readonly CheckBox _privacyBox;
         private readonly CheckBox _claudeKeyBox;
+        private readonly TextBlock _hookStatusText;
 
         internal event EventHandler Saved;
 
@@ -41,6 +43,7 @@ namespace VibeBar
 
             _settings = settings;
             _settingsStore = settingsStore;
+            _hookInstaller = new HookInstaller();
 
             Title = "VibeBar 设置";
             Width = 480;
@@ -94,6 +97,12 @@ namespace VibeBar
             _claudeKeyBox.Content = "从 Claude Code 配置读取 Key（ANTHROPIC_AUTH_TOKEN）";
             _claudeKeyBox.IsChecked = settings.Quota.ReadKeyFromClaudeSettings;
             _claudeKeyBox.Margin = new Thickness(0, 8, 0, 0);
+
+            _hookStatusText = new TextBlock();
+            _hookStatusText.TextWrapping = TextWrapping.Wrap;
+            _hookStatusText.Margin = new Thickness(0, 4, 0, 0);
+            _hookStatusText.Opacity = 0.85;
+            RefreshHookStatus();
 
             Content = BuildLayout();
         }
@@ -150,6 +159,34 @@ namespace VibeBar
             rules.Opacity = 0.85;
             rules.Margin = new Thickness(0, 2, 0, 0);
             root.Children.Add(rules);
+
+            AddLabel(root, "Claude Code Hooks");
+            root.Children.Add(_hookStatusText);
+            AddHint(
+                root,
+                "安装到 %USERPROFILE%\\.claude\\settings.json，安装前会自动备份。"
+                + "Hooks 对已启动的会话不生效，请启动新的 Claude Code 会话。");
+
+            StackPanel hookButtons = new StackPanel();
+            hookButtons.Orientation = Orientation.Horizontal;
+            hookButtons.Margin = new Thickness(0, 8, 0, 0);
+
+            Button installHooksButton = new Button();
+            installHooksButton.Content = "安装 Claude Code Hooks";
+            installHooksButton.Width = 172;
+            installHooksButton.Height = 30;
+            installHooksButton.Click += OnInstallHooks;
+            hookButtons.Children.Add(installHooksButton);
+
+            Button uninstallHooksButton = new Button();
+            uninstallHooksButton.Content = "卸载 Hooks";
+            uninstallHooksButton.Width = 100;
+            uninstallHooksButton.Height = 30;
+            uninstallHooksButton.Margin = new Thickness(8, 0, 0, 0);
+            uninstallHooksButton.Click += OnUninstallHooks;
+            hookButtons.Children.Add(uninstallHooksButton);
+
+            root.Children.Add(hookButtons);
 
             StackPanel buttons = new StackPanel();
             buttons.Orientation = Orientation.Horizontal;
@@ -289,6 +326,141 @@ namespace VibeBar
                 MessageBox.Show(
                     this,
                     "无法打开数据目录。",
+                    "VibeBar",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+        }
+
+        private void RefreshHookStatus()
+        {
+            bool installed = false;
+            try
+            {
+                installed = _hookInstaller.IsInstalled();
+            }
+            catch (Exception exception)
+            {
+                Log.Write("检查 Hooks 安装状态失败：" + exception.GetType().Name);
+            }
+
+            if (_settings.Hooks.Installed != installed)
+            {
+                _settings.Hooks.Installed = installed;
+            }
+
+            _hookStatusText.Text = installed
+                ? "状态：已安装（对新会话生效）"
+                : "状态：未安装";
+        }
+
+        private void OnInstallHooks(object sender, RoutedEventArgs e)
+        {
+            MessageBoxResult confirm = MessageBox.Show(
+                this,
+                "安装前会把 settings.json 备份到同目录。"
+                + "安装后请启动新的 Claude Code 会话，Hooks 才会生效。\n\n是否继续？",
+                "安装 Claude Code Hooks",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Question);
+            if (confirm != MessageBoxResult.OK)
+            {
+                return;
+            }
+
+            string error;
+            try
+            {
+                error = _hookInstaller.Install();
+            }
+            catch (Exception exception)
+            {
+                Log.Error("安装 Claude Code Hooks 失败", exception);
+                error = "安装 Hooks 失败，详见日志";
+            }
+
+            if (!string.IsNullOrEmpty(error))
+            {
+                MessageBox.Show(
+                    this,
+                    error,
+                    "安装 Claude Code Hooks",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            _settings.Hooks.Installed = true;
+            SaveHookState();
+            RefreshHookStatus();
+
+            MessageBox.Show(
+                this,
+                "Hooks 已安装。请启动新的 Claude Code 会话后生效。",
+                "安装 Claude Code Hooks",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+
+        private void OnUninstallHooks(object sender, RoutedEventArgs e)
+        {
+            MessageBoxResult confirm = MessageBox.Show(
+                this,
+                "将只移除 VibeBar 的 Hooks 条目，其他配置与插件 hooks 不受影响。\n\n是否继续？",
+                "卸载 Hooks",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Question);
+            if (confirm != MessageBoxResult.OK)
+            {
+                return;
+            }
+
+            string error;
+            try
+            {
+                error = _hookInstaller.Uninstall();
+            }
+            catch (Exception exception)
+            {
+                Log.Error("卸载 Claude Code Hooks 失败", exception);
+                error = "卸载 Hooks 失败，详见日志";
+            }
+
+            if (!string.IsNullOrEmpty(error))
+            {
+                MessageBox.Show(
+                    this,
+                    error,
+                    "卸载 Hooks",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            _settings.Hooks.Installed = false;
+            SaveHookState();
+            RefreshHookStatus();
+
+            MessageBox.Show(
+                this,
+                "Hooks 已卸载。",
+                "卸载 Hooks",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+
+        private void SaveHookState()
+        {
+            try
+            {
+                _settingsStore.Save(_settings);
+            }
+            catch (Exception exception)
+            {
+                Log.Error("保存 Hooks 状态失败", exception);
+                MessageBox.Show(
+                    this,
+                    "Hooks 状态已更新，但保存 settings.json 失败，详见日志。",
                     "VibeBar",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);

@@ -27,6 +27,10 @@ namespace VibeBar
         private GitProvider _gitProvider;
         private QuotaSnapshot _quotaSnapshot;
         private GitSnapshot _gitSnapshot;
+        private AgentProvider _agentProvider;
+        private EventServer _eventServer;
+        private AgentSnapshot _agentSnapshot;
+        private AgentSnapshot[] _agentSessions;
         private DispatcherTimer _clockTimer;
         private SettingsWindow _settingsWindow;
         private string _visualSignature = string.Empty;
@@ -107,11 +111,68 @@ namespace VibeBar
                 _settings.Git.PollSeconds);
             _gitProvider.RefreshSuggested += OnGitRefreshSuggested;
 
+            if (_settings.Agent.Enabled)
+            {
+                _agentProvider = new AgentProvider(_settings.Agent.StaleMinutes);
+                _agentProvider.RefreshSuggested += OnAgentRefreshSuggested;
+            }
+            else
+            {
+                Log.Write("Claude 会话事件已禁用");
+            }
+
             _scheduler = new ProviderScheduler();
             _scheduler.ResultAvailable += OnProviderResult;
             _scheduler.Register(_quotaProvider);
             _scheduler.Register(_gitProvider);
+            if (_agentProvider != null)
+            {
+                _scheduler.Register(_agentProvider);
+            }
+
             _scheduler.Start();
+
+            if (_agentProvider != null)
+            {
+                _eventServer = new EventServer(_agentProvider);
+                _eventServer.Start();
+            }
+        }
+
+        private void OnAgentRefreshSuggested()
+        {
+            if (_exiting)
+            {
+                return;
+            }
+
+            ProviderScheduler scheduler = _scheduler;
+            if (scheduler == null)
+            {
+                return;
+            }
+
+            try
+            {
+                scheduler.Refresh(AgentProvider.ProviderIdValue);
+            }
+            catch (Exception exception)
+            {
+                Log.Write("Agent 刷新请求失败：" + exception.GetType().Name);
+            }
+        }
+
+        private void RefreshAgentCache()
+        {
+            if (_agentProvider == null)
+            {
+                _agentSnapshot = null;
+                _agentSessions = null;
+                return;
+            }
+
+            _agentSnapshot = _agentProvider.GetAggregateSnapshot();
+            _agentSessions = _agentProvider.GetSessionSnapshots();
         }
 
         private void OnGitRefreshSuggested()
@@ -169,7 +230,10 @@ namespace VibeBar
             visuals[1] = SegmentFactory.CreateGit(
                 _gitSnapshot,
                 _settings.General.PrivacyMode);
-            visuals[2] = SegmentFactory.CreateAgentPlaceholder();
+            visuals[2] = SegmentFactory.CreateAgent(
+                _agentSnapshot,
+                _agentSessions,
+                _settings.General.PrivacyMode);
             return visuals;
         }
 
@@ -191,6 +255,10 @@ namespace VibeBar
                     _settings.General.PrivacyMode));
             }
 
+            sections.Add(SegmentFactory.CreateAgentDetail(
+                _agentSessions,
+                _settings.General.PrivacyMode));
+
             return sections.ToArray();
         }
 
@@ -204,6 +272,21 @@ namespace VibeBar
             if (_quotaSnapshot != null)
             {
                 RecomputePeak(_quotaSnapshot);
+            }
+
+            if (_agentProvider != null)
+            {
+                try
+                {
+                    if (_agentProvider.Tick(DateTime.UtcNow))
+                    {
+                        RefreshAgentCache();
+                    }
+                }
+                catch (Exception exception)
+                {
+                    Log.Write("推进 Agent 会话状态失败：" + exception.GetType().Name);
+                }
             }
 
             RefreshVisuals(false);
@@ -362,7 +445,29 @@ namespace VibeBar
             {
                 ApplyGitResult(result);
                 RefreshVisuals(true);
+                return;
             }
+
+            if (string.Equals(
+                result.ProviderId,
+                AgentProvider.ProviderIdValue,
+                StringComparison.Ordinal))
+            {
+                ApplyAgentResult(result);
+                RefreshVisuals(true);
+            }
+        }
+
+        private void ApplyAgentResult(ProviderResult result)
+        {
+            _agentSnapshot = result.Snapshot as AgentSnapshot;
+            if (_agentProvider == null)
+            {
+                _agentSessions = null;
+                return;
+            }
+
+            _agentSessions = _agentProvider.GetSessionSnapshots();
         }
 
         private void ApplyQuotaResult(ProviderResult result)
@@ -582,6 +687,11 @@ namespace VibeBar
                     _settings.Git.PollSeconds);
             }
 
+            if (_agentProvider != null)
+            {
+                _agentProvider.UpdateStaleMinutes(_settings.Agent.StaleMinutes);
+            }
+
             ApplyVisibility(_settings.General.ShowTaskbar);
             RefreshVisuals(true);
 
@@ -752,6 +862,19 @@ namespace VibeBar
                 _gitProvider.RefreshSuggested -= OnGitRefreshSuggested;
             }
 
+            if (_agentProvider != null)
+            {
+                _agentProvider.RefreshSuggested -= OnAgentRefreshSuggested;
+            }
+
+            // 先停事件服务（后台线程可能仍在 Ingest），再释放调度器/
+            // AgentProvider，避免退出阶段的回调访问已释放对象。
+            if (_eventServer != null)
+            {
+                _eventServer.Dispose();
+                _eventServer = null;
+            }
+
             if (_scheduler != null)
             {
                 _scheduler.ResultAvailable -= OnProviderResult;
@@ -763,6 +886,9 @@ namespace VibeBar
             _quotaSnapshot = null;
             _gitProvider = null;
             _gitSnapshot = null;
+            _agentProvider = null;
+            _agentSnapshot = null;
+            _agentSessions = null;
 
             Theme.Changed -= OnThemeChanged;
             Theme.Shutdown();

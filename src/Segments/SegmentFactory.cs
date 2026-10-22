@@ -308,6 +308,233 @@ namespace VibeBar
             return section;
         }
 
+        internal static SegmentVisual CreateAgent(
+            AgentSnapshot snapshot,
+            AgentSnapshot[] sessions,
+            bool privacy)
+        {
+            SegmentVisual visual = new SegmentVisual();
+            visual.Kind = SegmentKind.Agent;
+            visual.Glyph = string.Empty;
+            visual.Priority = 30;
+
+            int sessionCount;
+            if (sessions != null)
+            {
+                sessionCount = sessions.Length;
+            }
+            else
+            {
+                sessionCount = snapshot == null ? 0 : 1;
+            }
+
+            if (sessionCount <= 0 || (snapshot == null && sessions == null))
+            {
+                visual.Text = "会话 —";
+                visual.Role = ColorRole.Neutral;
+                visual.Pulse = false;
+                visual.Tooltip = "Claude 会话";
+                return visual;
+            }
+
+            bool anyWaitingPermission = false;
+            if (sessions != null)
+            {
+                for (int index = 0; index < sessions.Length; index++)
+                {
+                    if (sessions[index] != null
+                        && sessions[index].State == AgentState.WaitingPermission)
+                    {
+                        anyWaitingPermission = true;
+                        break;
+                    }
+                }
+            }
+            else if (snapshot != null)
+            {
+                anyWaitingPermission = snapshot.State == AgentState.WaitingPermission;
+            }
+
+            if (sessionCount > 1)
+            {
+                visual.Text = sessionCount.ToString(CultureInfo.InvariantCulture)
+                    + " 会话"
+                    + (anyWaitingPermission ? " · 等待确认" : string.Empty);
+                visual.Role = anyWaitingPermission
+                    ? ColorRole.Waiting
+                    : ColorRole.Neutral;
+                visual.Pulse = anyWaitingPermission;
+                visual.Tooltip = "Claude 会话："
+                    + sessionCount.ToString(CultureInfo.InvariantCulture)
+                    + " 个";
+                return visual;
+            }
+
+            AgentSnapshot current = sessions != null && sessions.Length > 0
+                ? sessions[0]
+                : snapshot;
+            if (current == null)
+            {
+                visual.Text = "会话 —";
+                visual.Role = ColorRole.Neutral;
+                visual.Pulse = false;
+                visual.Tooltip = "Claude 会话";
+                return visual;
+            }
+
+            visual.Text = AgentStateText(current.State, current.CurrentTool);
+            visual.Role = AgentStateRole(current.State);
+            visual.Pulse = current.State == AgentState.WaitingPermission;
+
+            string tooltip = "Claude 会话";
+            if (!privacy && !string.IsNullOrEmpty(current.ProjectName))
+            {
+                tooltip = tooltip + " · " + current.ProjectName;
+            }
+
+            if (current.IsStale)
+            {
+                tooltip = tooltip + " · 数据可能过期";
+            }
+
+            visual.Tooltip = tooltip;
+            return visual;
+        }
+
+        internal static DetailSection CreateAgentDetail(
+            AgentSnapshot[] sessions,
+            bool privacy)
+        {
+            DetailSection section = new DetailSection();
+            section.Title = "Claude 会话";
+            section.Actions = new DetailAction[0];
+
+            List<string> lines = new List<string>();
+            int written = 0;
+
+            if (sessions != null)
+            {
+                for (int index = 0; index < sessions.Length; index++)
+                {
+                    AgentSnapshot session = sessions[index];
+                    if (session == null)
+                    {
+                        continue;
+                    }
+
+                    string projectName = string.IsNullOrEmpty(session.ProjectName)
+                        ? "未知项目"
+                        : session.ProjectName;
+                    if (privacy)
+                    {
+                        projectName = "…";
+                    }
+
+                    lines.Add(
+                        projectName
+                        + " · "
+                        + AgentStateText(session.State, session.CurrentTool));
+
+                    string lastEvent = session.LastEventUtc == default(DateTime)
+                        ? "—"
+                        : session.LastEventUtc.ToLocalTime().ToString(
+                            "yyyy-MM-dd HH:mm:ss",
+                            CultureInfo.InvariantCulture);
+                    string eventLine = "最后事件：" + lastEvent;
+                    if (session.IsStale)
+                    {
+                        eventLine = eventLine + " · 数据可能过期";
+                    }
+
+                    lines.Add(eventLine);
+                    written++;
+                }
+            }
+
+            if (written == 0)
+            {
+                lines.Add("暂无活动会话");
+            }
+
+            section.Lines = lines.ToArray();
+            return section;
+        }
+
+        internal static string AgentStateText(AgentState state, string currentTool)
+        {
+            if (state == AgentState.WaitingPermission)
+            {
+                return "等待确认";
+            }
+
+            if (state == AgentState.WaitingQuota)
+            {
+                return "额度等待";
+            }
+
+            if (state == AgentState.Thinking)
+            {
+                return "思考中";
+            }
+
+            if (state == AgentState.Tool)
+            {
+                return string.IsNullOrEmpty(currentTool) ? "工具" : currentTool;
+            }
+
+            if (state == AgentState.Done)
+            {
+                return "完成";
+            }
+
+            if (state == AgentState.Idle)
+            {
+                return "空闲";
+            }
+
+            if (state == AgentState.Error)
+            {
+                return "错误";
+            }
+
+            return "未知";
+        }
+
+        private static ColorRole AgentStateRole(AgentState state)
+        {
+            if (state == AgentState.WaitingPermission)
+            {
+                return ColorRole.Waiting;
+            }
+
+            if (state == AgentState.WaitingQuota)
+            {
+                return ColorRole.Warning;
+            }
+
+            if (state == AgentState.Thinking || state == AgentState.Tool)
+            {
+                return ColorRole.Accent;
+            }
+
+            if (state == AgentState.Done)
+            {
+                return ColorRole.Success;
+            }
+
+            if (state == AgentState.Error)
+            {
+                return ColorRole.Critical;
+            }
+
+            if (state == AgentState.Unknown)
+            {
+                return ColorRole.Warning;
+            }
+
+            return ColorRole.Neutral;
+        }
+
         internal static SegmentVisual CreateQuota(QuotaSnapshot snapshot, bool privacy)
         {
             SegmentVisual visual = new SegmentVisual();

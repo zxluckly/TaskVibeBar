@@ -21,13 +21,24 @@ if not exist "%SRC%\app.manifest" goto :missing_manifest
 if not exist "%SRC%\Program.cs" goto :missing_sources
 if not exist "%SRC%\Segments\SegmentVisual.cs" goto :missing_segments
 if not exist "%SRC%\Providers\IProvider.cs" goto :missing_providers
+if not exist "%SRC%\Providers\AgentProvider.cs" goto :missing_agent
+if not exist "%SRC%\EventBus\EventProtocol.cs" goto :missing_eventbus
+if not exist "%SRC%\EventBus\EventServer.cs" goto :missing_eventbus
+if not exist "%SRC%\EventBus\HookInstaller.cs" goto :missing_eventbus
+if not exist "%SRC%\Cli\CliMain.cs" goto :missing_cli
 if not exist "%OUT%" mkdir "%OUT%"
 
 echo [BUILD] Compiling bin\VibeBar.exe
-"%CSC%" /nologo /codepage:65001 /utf8output /target:winexe /platform:anycpu /optimize+ /out:"%OUT%\VibeBar.exe" /win32manifest:"%SRC%\app.manifest" /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Xaml.dll /r:System.Web.Extensions.dll /r:System.Security.dll /r:"%NET48%\WindowsBase.dll" /r:"%NET48%\PresentationCore.dll" /r:"%NET48%\PresentationFramework.dll" "%SRC%\*.cs" "%SRC%\Segments\*.cs" "%SRC%\Providers\*.cs"
+"%CSC%" /nologo /codepage:65001 /utf8output /target:winexe /platform:anycpu /optimize+ /out:"%OUT%\VibeBar.exe" /win32manifest:"%SRC%\app.manifest" /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Xaml.dll /r:System.Web.Extensions.dll /r:System.Security.dll /r:"%NET48%\WindowsBase.dll" /r:"%NET48%\PresentationCore.dll" /r:"%NET48%\PresentationFramework.dll" "%SRC%\*.cs" "%SRC%\Segments\*.cs" "%SRC%\Providers\*.cs" "%SRC%\EventBus\*.cs"
 if errorlevel 1 goto :build_failed
 
 echo [OK] %OUT%\VibeBar.exe
+
+echo [BUILD] Compiling bin\VibeBar.Cli.exe
+"%CSC%" /nologo /codepage:65001 /utf8output /target:exe /platform:anycpu /optimize+ /out:"%OUT%\VibeBar.Cli.exe" /r:System.dll /r:System.Core.dll "%SRC%\Cli\CliMain.cs" "%SRC%\EventBus\EventProtocol.cs"
+if errorlevel 1 goto :build_failed
+
+echo [OK] %OUT%\VibeBar.Cli.exe
 exit /b 0
 
 :missing_csc
@@ -57,6 +68,18 @@ exit /b 1
 
 :missing_providers
 echo [ERROR] provider sources not found in %SRC%\Providers
+exit /b 1
+
+:missing_agent
+echo [ERROR] AgentProvider.cs not found in %SRC%\Providers
+exit /b 1
+
+:missing_eventbus
+echo [ERROR] event bus sources not found in %SRC%\EventBus
+exit /b 1
+
+:missing_cli
+echo [ERROR] CLI source not found: %SRC%\Cli\CliMain.cs
 exit /b 1
 
 :build_failed
