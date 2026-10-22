@@ -30,6 +30,7 @@ namespace VibeBar
         public string Provider = "deepseek";
         public string BaseUrl = "https://api.deepseek.com";
         public bool ReadKeyFromClaudeSettings = false;
+        public int RefreshSeconds = 60;
         public decimal WarnBelow = 20m;
         public decimal CriticalBelow = 5m;
         public PeakValleySettings PeakValley = new PeakValleySettings();
@@ -178,6 +179,9 @@ namespace VibeBar
                 quota["provider"] = settings.Quota.Provider;
                 quota["baseUrl"] = settings.Quota.BaseUrl;
                 quota["readKeyFromClaudeSettings"] = settings.Quota.ReadKeyFromClaudeSettings;
+                settings.Quota.RefreshSeconds =
+                    NormalizeRefreshSeconds(settings.Quota.RefreshSeconds);
+                quota["refreshSeconds"] = settings.Quota.RefreshSeconds;
                 quota["warnBelow"] = settings.Quota.WarnBelow;
                 quota["criticalBelow"] = settings.Quota.CriticalBelow;
 
@@ -233,6 +237,8 @@ namespace VibeBar
                 settings.Quota.BaseUrl = GetString(quota, "baseUrl", "https://api.deepseek.com");
                 settings.Quota.ReadKeyFromClaudeSettings =
                     GetBool(quota, "readKeyFromClaudeSettings", false);
+                settings.Quota.RefreshSeconds =
+                    NormalizeRefreshSeconds(GetInt(quota, "refreshSeconds", 60));
                 settings.Quota.WarnBelow = GetDecimal(quota, "warnBelow", 20m);
                 settings.Quota.CriticalBelow = GetDecimal(quota, "criticalBelow", 5m);
 
@@ -381,6 +387,23 @@ namespace VibeBar
             }
 
             return result;
+        }
+
+        private static int NormalizeRefreshSeconds(int seconds)
+        {
+            if (seconds < 60)
+            {
+                Log.Write("设置项 quota.refreshSeconds 小于 60，已按 60 处理");
+                return 60;
+            }
+
+            if (seconds > 3600)
+            {
+                Log.Write("设置项 quota.refreshSeconds 大于 3600，已按 3600 处理");
+                return 3600;
+            }
+
+            return seconds;
         }
 
         private void WriteAtomic(string text)

@@ -14,6 +14,7 @@ namespace VibeBar
         private bool _disposed;
 
         internal event EventHandler ToggleVisibilityRequested;
+        internal event EventHandler SettingsRequested;
         internal event EventHandler ExitRequested;
 
         internal TrayController()
@@ -23,6 +24,16 @@ namespace VibeBar
             _menu = new ContextMenuStrip();
             _menu.ShowImageMargin = false;
             _menu.ShowCheckMargin = true;
+
+            ToolStripMenuItem settingsItem = new ToolStripMenuItem("设置");
+            settingsItem.Click += delegate
+            {
+                EventHandler handler = SettingsRequested;
+                if (handler != null)
+                {
+                    handler(this, EventArgs.Empty);
+                }
+            };
 
             _visibilityItem = new ToolStripMenuItem("显示/隐藏");
             _visibilityItem.CheckOnClick = false;
@@ -45,6 +56,7 @@ namespace VibeBar
                 }
             };
 
+            _menu.Items.Add(settingsItem);
             _menu.Items.Add(_visibilityItem);
             _menu.Items.Add(new ToolStripSeparator());
             _menu.Items.Add(exitItem);

@@ -20,10 +20,11 @@ if defined MISSING_REF goto :missing_ref
 if not exist "%SRC%\app.manifest" goto :missing_manifest
 if not exist "%SRC%\Program.cs" goto :missing_sources
 if not exist "%SRC%\Segments\SegmentVisual.cs" goto :missing_segments
+if not exist "%SRC%\Providers\IProvider.cs" goto :missing_providers
 if not exist "%OUT%" mkdir "%OUT%"
 
 echo [BUILD] Compiling bin\VibeBar.exe
-"%CSC%" /nologo /codepage:65001 /utf8output /target:winexe /platform:anycpu /optimize+ /out:"%OUT%\VibeBar.exe" /win32manifest:"%SRC%\app.manifest" /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Xaml.dll /r:System.Web.Extensions.dll /r:System.Security.dll /r:"%NET48%\WindowsBase.dll" /r:"%NET48%\PresentationCore.dll" /r:"%NET48%\PresentationFramework.dll" "%SRC%\*.cs" "%SRC%\Segments\*.cs"
+"%CSC%" /nologo /codepage:65001 /utf8output /target:winexe /platform:anycpu /optimize+ /out:"%OUT%\VibeBar.exe" /win32manifest:"%SRC%\app.manifest" /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Xaml.dll /r:System.Web.Extensions.dll /r:System.Security.dll /r:"%NET48%\WindowsBase.dll" /r:"%NET48%\PresentationCore.dll" /r:"%NET48%\PresentationFramework.dll" "%SRC%\*.cs" "%SRC%\Segments\*.cs" "%SRC%\Providers\*.cs"
 if errorlevel 1 goto :build_failed
 
 echo [OK] %OUT%\VibeBar.exe
@@ -52,6 +53,10 @@ exit /b 1
 
 :missing_segments
 echo [ERROR] segment sources not found in %SRC%\Segments
+exit /b 1
+
+:missing_providers
+echo [ERROR] provider sources not found in %SRC%\Providers
 exit /b 1
 
 :build_failed

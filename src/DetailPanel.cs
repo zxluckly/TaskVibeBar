@@ -20,11 +20,12 @@ namespace VibeBar
         private readonly TextBlock _heading;
         private readonly StackPanel _rows;
         private readonly List<TextBlock> _lineLabels = new List<TextBlock>();
+        private readonly List<TextBlock> _titleLabels = new List<TextBlock>();
         private readonly DispatcherTimer _showTimer;
         private readonly DispatcherTimer _hideTimer;
         private readonly DispatcherTimer _visibilityTimer;
 
-        private SegmentVisual[] _visuals = new SegmentVisual[0];
+        private DetailSection[] _sections = new DetailSection[0];
         private Drawing.Rectangle _anchor = Drawing.Rectangle.Empty;
         private bool _panelVisible;
         private bool _disposed;
@@ -132,9 +133,9 @@ namespace VibeBar
                 style | NativeMethods.WS_EX_NOACTIVATE);
         }
 
-        internal void SetVisuals(SegmentVisual[] visuals)
+        internal void SetSections(DetailSection[] sections)
         {
-            _visuals = visuals == null ? new SegmentVisual[0] : visuals;
+            _sections = sections == null ? new DetailSection[0] : sections;
             RebuildRows();
         }
 
@@ -194,6 +195,12 @@ namespace VibeBar
             _root.Background = new SolidColorBrush(UiTheme.PanelBackground);
             _root.BorderBrush = new SolidColorBrush(UiTheme.Border);
             _heading.Foreground = new SolidColorBrush(UiTheme.TextPrimary);
+
+            for (int index = 0; index < _titleLabels.Count; index++)
+            {
+                _titleLabels[index].Foreground =
+                    new SolidColorBrush(UiTheme.TextPrimary);
+            }
 
             for (int index = 0; index < _lineLabels.Count; index++)
             {
@@ -376,26 +383,81 @@ namespace VibeBar
         {
             _rows.Children.Clear();
             _lineLabels.Clear();
+            _titleLabels.Clear();
 
-            for (int index = 0; index < _visuals.Length; index++)
+            if (_sections.Length == 0)
             {
-                SegmentVisual visual = _visuals[index];
-                if (visual == null)
+                TextBlock empty = new TextBlock();
+                empty.Text = "暂无数据";
+                empty.FontFamily = UiTheme.UiFont;
+                empty.FontSize = 13;
+                empty.Margin = new Thickness(0, 2, 0, 2);
+                empty.TextTrimming = TextTrimming.CharacterEllipsis;
+
+                _rows.Children.Add(empty);
+                _lineLabels.Add(empty);
+                ApplyTheme();
+                return;
+            }
+
+            bool firstSection = true;
+            for (int sectionIndex = 0; sectionIndex < _sections.Length; sectionIndex++)
+            {
+                DetailSection section = _sections[sectionIndex];
+                if (section == null)
                 {
                     continue;
                 }
 
-                TextBlock line = new TextBlock();
-                line.Text = string.IsNullOrEmpty(visual.Glyph)
-                    ? visual.Text
-                    : visual.Glyph + " " + visual.Text;
-                line.FontFamily = UiTheme.UiFont;
-                line.FontSize = 13;
-                line.Margin = new Thickness(0, 4, 0, 4);
-                line.TextTrimming = TextTrimming.CharacterEllipsis;
+                bool hasTitle = !string.IsNullOrEmpty(section.Title);
+                bool hasLines = section.Lines != null && section.Lines.Length > 0;
+                if (!hasTitle && !hasLines)
+                {
+                    continue;
+                }
 
-                _rows.Children.Add(line);
-                _lineLabels.Add(line);
+                if (hasTitle)
+                {
+                    TextBlock title = new TextBlock();
+                    title.Text = section.Title;
+                    title.FontFamily = UiTheme.UiFont;
+                    title.FontSize = 13.5;
+                    title.FontWeight = FontWeights.SemiBold;
+                    title.Margin = new Thickness(
+                        0,
+                        firstSection ? 0 : 12,
+                        0,
+                        4);
+                    title.TextTrimming = TextTrimming.CharacterEllipsis;
+
+                    _rows.Children.Add(title);
+                    _titleLabels.Add(title);
+                }
+
+                if (hasLines)
+                {
+                    for (int lineIndex = 0; lineIndex < section.Lines.Length; lineIndex++)
+                    {
+                        string text = section.Lines[lineIndex];
+                        if (text == null)
+                        {
+                            continue;
+                        }
+
+                        TextBlock line = new TextBlock();
+                        line.Text = text;
+                        line.FontFamily = UiTheme.UiFont;
+                        line.FontSize = 13;
+                        line.Margin = new Thickness(0, 2, 0, 2);
+                        line.TextWrapping = TextWrapping.Wrap;
+                        line.TextTrimming = TextTrimming.CharacterEllipsis;
+
+                        _rows.Children.Add(line);
+                        _lineLabels.Add(line);
+                    }
+                }
+
+                firstSection = false;
             }
 
             ApplyTheme();
