@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -25,6 +26,17 @@ namespace VibeBar
         private readonly CheckBox _showTaskbarBox;
         private readonly CheckBox _privacyBox;
         private readonly CheckBox _claudeKeyBox;
+
+        private readonly TextBox _offsetBox;
+        private readonly TextBox _maxWidthBox;
+        private readonly CheckBox _showQuotaBox;
+        private readonly CheckBox _showGitBox;
+        private readonly CheckBox _showAgentBox;
+        private readonly CheckBox _hoverThemeBox;
+        private readonly TextBox _hoverColorBox;
+        private readonly Slider _hoverOpacitySlider;
+        private readonly TextBlock _hoverOpacityLabel;
+        private readonly Border _hoverPreview;
         private readonly TextBlock _hookStatusText;
 
         internal event EventHandler Saved;
@@ -98,13 +110,103 @@ namespace VibeBar
             _claudeKeyBox.IsChecked = settings.Quota.ReadKeyFromClaudeSettings;
             _claudeKeyBox.Margin = new Thickness(0, 8, 0, 0);
 
+            _offsetBox = new TextBox();
+            _offsetBox.Height = 28;
+            _offsetBox.Width = 100;
+            _offsetBox.HorizontalAlignment = HorizontalAlignment.Left;
+            _offsetBox.Text = settings.Ui.OffsetX.ToString();
+
+            _maxWidthBox = new TextBox();
+            _maxWidthBox.Height = 28;
+            _maxWidthBox.Width = 100;
+            _maxWidthBox.HorizontalAlignment = HorizontalAlignment.Left;
+            _maxWidthBox.Text = settings.Ui.MaxWidth.ToString();
+
+            _showQuotaBox = new CheckBox();
+            _showQuotaBox.Content = "额度";
+            _showQuotaBox.IsChecked = settings.Ui.ShowQuota;
+            _showQuotaBox.Margin = new Thickness(0, 0, 14, 0);
+
+            _showGitBox = new CheckBox();
+            _showGitBox.Content = "Git";
+            _showGitBox.IsChecked = settings.Ui.ShowGit;
+            _showGitBox.Margin = new Thickness(0, 0, 14, 0);
+
+            _showAgentBox = new CheckBox();
+            _showAgentBox.Content = "会话";
+            _showAgentBox.IsChecked = settings.Ui.ShowAgent;
+
+            _hoverThemeBox = new CheckBox();
+            _hoverThemeBox.Content = "跟随系统主题色";
+            _hoverThemeBox.IsChecked = string.IsNullOrEmpty(settings.Ui.HoverColor);
+
+            _hoverColorBox = new TextBox();
+            _hoverColorBox.Height = 28;
+            _hoverColorBox.Width = 120;
+            _hoverColorBox.HorizontalAlignment = HorizontalAlignment.Left;
+            _hoverColorBox.Text = settings.Ui.HoverColor;
+            _hoverColorBox.ToolTip = "格式 #RRGGBB，例如 #FF8800";
+            _hoverColorBox.TextChanged += delegate
+            {
+                UpdateHoverControls();
+                UpdateHoverPreview();
+            };
+
+            _hoverThemeBox.Checked += delegate
+            {
+                UpdateHoverControls();
+                UpdateHoverPreview();
+            };
+            _hoverThemeBox.Unchecked += delegate
+            {
+                UpdateHoverControls();
+                UpdateHoverPreview();
+            };
+
+            _hoverOpacitySlider = new Slider();
+            _hoverOpacitySlider.Minimum = 0;
+            _hoverOpacitySlider.Maximum = 100;
+            _hoverOpacitySlider.Width = 220;
+            _hoverOpacitySlider.IsSnapToTickEnabled = true;
+            _hoverOpacitySlider.TickFrequency = 1;
+            _hoverOpacitySlider.VerticalAlignment = VerticalAlignment.Center;
+            _hoverOpacitySlider.Value = settings.Ui.HoverOpacity * 100.0 / 255.0;
+            _hoverOpacitySlider.ValueChanged += delegate
+            {
+                UpdateHoverControls();
+                UpdateHoverPreview();
+            };
+
+            _hoverOpacityLabel = new TextBlock();
+            _hoverOpacityLabel.VerticalAlignment = VerticalAlignment.Center;
+            _hoverOpacityLabel.Margin = new Thickness(8, 0, 0, 0);
+
+            _hoverPreview = new Border();
+            _hoverPreview.Width = 48;
+            _hoverPreview.Height = 24;
+            _hoverPreview.CornerRadius = new CornerRadius(4);
+            _hoverPreview.BorderThickness = new Thickness(1);
+            _hoverPreview.BorderBrush = new SolidColorBrush(UiTheme.Border);
+            _hoverPreview.Margin = new Thickness(10, 0, 0, 0);
+            _hoverPreview.VerticalAlignment = VerticalAlignment.Center;
+
+            UpdateHoverControls();
+            UpdateHoverPreview();
+
             _hookStatusText = new TextBlock();
             _hookStatusText.TextWrapping = TextWrapping.Wrap;
             _hookStatusText.Margin = new Thickness(0, 4, 0, 0);
             _hookStatusText.Opacity = 0.85;
             RefreshHookStatus();
 
-            Content = BuildLayout();
+            ScrollViewer scroll = new ScrollViewer();
+            scroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+            scroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+            scroll.Content = BuildLayout();
+            scroll.MaxHeight = Math.Max(
+                360.0,
+                SystemParameters.WorkArea.Height - 120.0);
+            Content = scroll;
         }
 
         private UIElement BuildLayout()
@@ -151,6 +253,52 @@ namespace VibeBar
             root.Children.Add(_showTaskbarBox);
             root.Children.Add(_privacyBox);
             root.Children.Add(_claudeKeyBox);
+
+            AddLabel(root, "任务栏显示区域");
+            root.Children.Add(CreateInlineRow("距托盘偏移（px）", _offsetBox));
+            root.Children.Add(CreateInlineRow("最大宽度（px）", _maxWidthBox));
+
+            StackPanel moduleRow = new StackPanel();
+            moduleRow.Orientation = Orientation.Horizontal;
+            moduleRow.Margin = new Thickness(0, 8, 0, 0);
+            TextBlock moduleLabel = new TextBlock();
+            moduleLabel.Text = "显示模块";
+            moduleLabel.Width = 150;
+            moduleLabel.VerticalAlignment = VerticalAlignment.Center;
+            moduleRow.Children.Add(moduleLabel);
+            moduleRow.Children.Add(_showQuotaBox);
+            moduleRow.Children.Add(_showGitBox);
+            moduleRow.Children.Add(_showAgentBox);
+            root.Children.Add(moduleRow);
+            AddHint(root, "偏移越大越靠左；宽度不足时自动折叠为 +N。至少保留一个模块。");
+
+            AddLabel(root, "悬停背景");
+            root.Children.Add(_hoverThemeBox);
+
+            StackPanel hoverColorRow = new StackPanel();
+            hoverColorRow.Orientation = Orientation.Horizontal;
+            hoverColorRow.Margin = new Thickness(0, 8, 0, 0);
+            TextBlock colorLabel = new TextBlock();
+            colorLabel.Text = "颜色";
+            colorLabel.Width = 150;
+            colorLabel.VerticalAlignment = VerticalAlignment.Center;
+            hoverColorRow.Children.Add(colorLabel);
+            hoverColorRow.Children.Add(_hoverColorBox);
+            hoverColorRow.Children.Add(_hoverPreview);
+            root.Children.Add(hoverColorRow);
+
+            StackPanel hoverOpacityRow = new StackPanel();
+            hoverOpacityRow.Orientation = Orientation.Horizontal;
+            hoverOpacityRow.Margin = new Thickness(0, 8, 0, 0);
+            TextBlock opacityLabel = new TextBlock();
+            opacityLabel.Text = "透明度";
+            opacityLabel.Width = 150;
+            opacityLabel.VerticalAlignment = VerticalAlignment.Center;
+            hoverOpacityRow.Children.Add(opacityLabel);
+            hoverOpacityRow.Children.Add(_hoverOpacitySlider);
+            hoverOpacityRow.Children.Add(_hoverOpacityLabel);
+            root.Children.Add(hoverOpacityRow);
+            AddHint(root, "颜色留空或勾选「跟随系统主题色」时使用主题色；透明度 0% 表示悬停也不显示背景。");
 
             AddLabel(root, "峰谷规则（只读）");
             TextBlock rules = new TextBlock();
@@ -268,6 +416,102 @@ namespace VibeBar
             }
 
             return 60;
+        }
+
+        private static StackPanel CreateInlineRow(string labelText, UIElement control)
+        {
+            StackPanel row = new StackPanel();
+            row.Orientation = Orientation.Horizontal;
+            row.Margin = new Thickness(0, 6, 0, 0);
+
+            TextBlock label = new TextBlock();
+            label.Text = labelText;
+            label.Width = 150;
+            label.VerticalAlignment = VerticalAlignment.Center;
+            row.Children.Add(label);
+            row.Children.Add(control);
+            return row;
+        }
+
+        private void UpdateHoverControls()
+        {
+            bool followTheme = _hoverThemeBox.IsChecked == true;
+            _hoverColorBox.IsEnabled = !followTheme;
+            if (followTheme)
+            {
+                _hoverColorBox.Text = string.Empty;
+            }
+
+            int percent = (int)Math.Round(_hoverOpacitySlider.Value);
+            _hoverOpacityLabel.Text = percent.ToString(
+                CultureInfo.InvariantCulture) + "%";
+        }
+
+        private void UpdateHoverPreview()
+        {
+            if (_hoverPreview == null)
+            {
+                return;
+            }
+
+            Color baseColor;
+            if (_hoverThemeBox.IsChecked == true)
+            {
+                Color theme = UiTheme.BarBackground;
+                baseColor = Color.FromRgb(theme.R, theme.G, theme.B);
+            }
+            else
+            {
+                string normalized = UiSettings.NormalizeColor(_hoverColorBox.Text);
+                baseColor = ParseColorOrTheme(normalized);
+            }
+
+            int alpha = (int)Math.Round(_hoverOpacitySlider.Value * 255.0 / 100.0);
+            if (alpha < 0)
+            {
+                alpha = 0;
+            }
+            else if (alpha > 255)
+            {
+                alpha = 255;
+            }
+
+            _hoverPreview.Background = new SolidColorBrush(
+                Color.FromArgb((byte)alpha, baseColor.R, baseColor.G, baseColor.B));
+        }
+
+        private static Color ParseColorOrTheme(string normalized)
+        {
+            if (string.IsNullOrEmpty(normalized) || normalized.Length != 7)
+            {
+                Color theme = UiTheme.BarBackground;
+                return Color.FromRgb(theme.R, theme.G, theme.B);
+            }
+
+            int red;
+            int green;
+            int blue;
+            if (int.TryParse(
+                    normalized.Substring(1, 2),
+                    NumberStyles.HexNumber,
+                    CultureInfo.InvariantCulture,
+                    out red)
+                && int.TryParse(
+                    normalized.Substring(3, 2),
+                    NumberStyles.HexNumber,
+                    CultureInfo.InvariantCulture,
+                    out green)
+                && int.TryParse(
+                    normalized.Substring(5, 2),
+                    NumberStyles.HexNumber,
+                    CultureInfo.InvariantCulture,
+                    out blue))
+            {
+                return Color.FromRgb((byte)red, (byte)green, (byte)blue);
+            }
+
+            Color fallback = UiTheme.BarBackground;
+            return Color.FromRgb(fallback.R, fallback.G, fallback.B);
         }
 
         private static void AddLabel(Panel panel, string text)
@@ -524,6 +768,79 @@ namespace VibeBar
             _settings.Quota.RefreshSeconds = refreshSeconds;
             _settings.General.ShowTaskbar = _showTaskbarBox.IsChecked == true;
             _settings.General.PrivacyMode = _privacyBox.IsChecked == true;
+
+            int offsetX;
+            if (!int.TryParse(
+                _offsetBox.Text.Trim(),
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out offsetX))
+            {
+                MessageBox.Show(
+                    this,
+                    "距托盘偏移必须是整数（0–400）。",
+                    "VibeBar",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                _offsetBox.Focus();
+                return;
+            }
+
+            int maxWidth;
+            if (!int.TryParse(
+                _maxWidthBox.Text.Trim(),
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out maxWidth))
+            {
+                MessageBox.Show(
+                    this,
+                    "最大宽度必须是整数（120–800）。",
+                    "VibeBar",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                _maxWidthBox.Focus();
+                return;
+            }
+
+            bool showQuota = _showQuotaBox.IsChecked == true;
+            bool showGit = _showGitBox.IsChecked == true;
+            bool showAgent = _showAgentBox.IsChecked == true;
+            if (!showQuota && !showGit && !showAgent)
+            {
+                MessageBox.Show(
+                    this,
+                    "至少保留一个显示模块。",
+                    "VibeBar",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            string hoverColor = _hoverThemeBox.IsChecked == true
+                ? string.Empty
+                : UiSettings.NormalizeColor(_hoverColorBox.Text);
+            if (_hoverThemeBox.IsChecked != true && hoverColor.Length == 0)
+            {
+                MessageBox.Show(
+                    this,
+                    "悬停颜色格式应为 #RRGGBB，例如 #FF8800；或勾选「跟随系统主题色」。",
+                    "VibeBar",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                _hoverColorBox.Focus();
+                return;
+            }
+
+            _settings.Ui.OffsetX = offsetX;
+            _settings.Ui.MaxWidth = maxWidth;
+            _settings.Ui.ShowQuota = showQuota;
+            _settings.Ui.ShowGit = showGit;
+            _settings.Ui.ShowAgent = showAgent;
+            _settings.Ui.HoverColor = hoverColor;
+            _settings.Ui.HoverOpacity = (int)Math.Round(
+                _hoverOpacitySlider.Value * 255.0 / 100.0);
+            UiSettings.Normalize(_settings.Ui);
 
             try
             {

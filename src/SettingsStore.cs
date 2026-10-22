@@ -79,6 +79,101 @@ namespace VibeBar
     {
         public int MaxWidth = 420;
         public int MinWidth = 120;
+
+        // 显示区域：距托盘左缘的水平偏移（px）与模块显隐。
+        public int OffsetX = 8;
+        public bool ShowQuota = true;
+        public bool ShowGit = true;
+        public bool ShowAgent = true;
+
+        // 悬停背景：空字符串表示跟随系统主题色；HoverOpacity 0-255。
+        public string HoverColor = string.Empty;
+        public int HoverOpacity = 235;
+
+        internal static void Normalize(UiSettings settings)
+        {
+            if (settings == null)
+            {
+                return;
+            }
+
+            if (settings.MaxWidth < 120)
+            {
+                settings.MaxWidth = 120;
+            }
+            else if (settings.MaxWidth > 800)
+            {
+                settings.MaxWidth = 800;
+            }
+
+            if (settings.MinWidth < 60)
+            {
+                settings.MinWidth = 60;
+            }
+
+            if (settings.MinWidth > settings.MaxWidth)
+            {
+                settings.MinWidth = settings.MaxWidth;
+            }
+
+            if (settings.OffsetX < 0)
+            {
+                settings.OffsetX = 0;
+            }
+            else if (settings.OffsetX > 400)
+            {
+                settings.OffsetX = 400;
+            }
+
+            if (settings.HoverOpacity < 0)
+            {
+                settings.HoverOpacity = 0;
+            }
+            else if (settings.HoverOpacity > 255)
+            {
+                settings.HoverOpacity = 255;
+            }
+
+            settings.HoverColor = NormalizeColor(settings.HoverColor);
+
+            if (!settings.ShowQuota && !settings.ShowGit && !settings.ShowAgent)
+            {
+                settings.ShowQuota = true;
+            }
+        }
+
+        internal static string NormalizeColor(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return string.Empty;
+            }
+
+            string text = value.Trim();
+            if (!text.StartsWith("#", StringComparison.Ordinal))
+            {
+                text = "#" + text;
+            }
+
+            if (text.Length != 7)
+            {
+                return string.Empty;
+            }
+
+            for (int index = 1; index < text.Length; index++)
+            {
+                char c = text[index];
+                bool hex = (c >= '0' && c <= '9')
+                    || (c >= 'a' && c <= 'f')
+                    || (c >= 'A' && c <= 'F');
+                if (!hex)
+                {
+                    return string.Empty;
+                }
+            }
+
+            return text.ToUpperInvariant();
+        }
     }
 
     internal sealed class HookSettings
@@ -206,9 +301,16 @@ namespace VibeBar
                 agent["enabled"] = settings.Agent.Enabled;
                 agent["staleMinutes"] = settings.Agent.StaleMinutes;
 
+                UiSettings.Normalize(settings.Ui);
                 Dictionary<string, object> ui = EnsureObject(_root, "ui");
                 ui["maxWidth"] = settings.Ui.MaxWidth;
                 ui["minWidth"] = settings.Ui.MinWidth;
+                ui["offsetX"] = settings.Ui.OffsetX;
+                ui["showQuota"] = settings.Ui.ShowQuota;
+                ui["showGit"] = settings.Ui.ShowGit;
+                ui["showAgent"] = settings.Ui.ShowAgent;
+                ui["hoverColor"] = settings.Ui.HoverColor;
+                ui["hoverOpacity"] = settings.Ui.HoverOpacity;
 
                 Dictionary<string, object> hooks = EnsureObject(_root, "hooks");
                 hooks["installed"] = settings.Hooks.Installed;
@@ -281,7 +383,15 @@ namespace VibeBar
             {
                 settings.Ui.MaxWidth = GetInt(ui, "maxWidth", 420);
                 settings.Ui.MinWidth = GetInt(ui, "minWidth", 120);
+                settings.Ui.OffsetX = GetInt(ui, "offsetX", 8);
+                settings.Ui.ShowQuota = GetBool(ui, "showQuota", true);
+                settings.Ui.ShowGit = GetBool(ui, "showGit", true);
+                settings.Ui.ShowAgent = GetBool(ui, "showAgent", true);
+                settings.Ui.HoverColor = GetString(ui, "hoverColor", string.Empty);
+                settings.Ui.HoverOpacity = GetInt(ui, "hoverOpacity", 235);
             }
+
+            UiSettings.Normalize(settings.Ui);
 
             Dictionary<string, object> hooks = GetObject(root, "hooks");
             if (hooks != null)

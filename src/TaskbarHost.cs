@@ -21,6 +21,7 @@ namespace VibeBar
         private HwndSource _source;
         private int _maxWidth = 420;
         private int _minWidth = 120;
+        private int _offsetX = 8;
 
         internal TaskbarHost(TaskbarStrip strip)
         {
@@ -123,6 +124,25 @@ namespace VibeBar
         {
             _destroyed = true;
             _taskbar = IntPtr.Zero;
+        }
+
+        internal void SetOffsetX(int offsetX)
+        {
+            if (offsetX < 0)
+            {
+                offsetX = 0;
+            }
+            else if (offsetX > 400)
+            {
+                offsetX = 400;
+            }
+
+            _offsetX = offsetX;
+
+            if (_enabled && !_destroyed)
+            {
+                UpdatePosition();
+            }
         }
 
         internal void SetWidthLimits(int maxWidth, int minWidth)
@@ -329,7 +349,7 @@ namespace VibeBar
                 if (NativeMethods.GetWindowRect(notify, out notifyRect)
                     && notifyRect.Left > taskbarRect.Left)
                 {
-                    rightEdge = notifyRect.Left - 8;
+                    rightEdge = notifyRect.Left - _offsetX;
                 }
             }
 

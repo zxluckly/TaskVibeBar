@@ -89,6 +89,9 @@ namespace VibeBar
             _strip = new TaskbarStrip(BuildVisuals());
             _strip.HoverChanged += OnStripHoverChanged;
             _strip.SegmentClicked += OnSegmentClicked;
+            _strip.SetHoverStyle(
+                _settings.Ui.HoverColor,
+                _settings.Ui.HoverOpacity);
 
             _panel = new DetailPanel();
             _panel.SettingsRequested += OnSettingsRequested;
@@ -96,6 +99,7 @@ namespace VibeBar
 
             _host = new TaskbarHost(_strip);
             _host.SetWidthLimits(_settings.Ui.MaxWidth, _settings.Ui.MinWidth);
+            _host.SetOffsetX(_settings.Ui.OffsetX);
 
             _tray = new TrayController();
             _tray.ToggleVisibilityRequested += OnToggleVisibilityRequested;
@@ -244,25 +248,46 @@ namespace VibeBar
 
         private SegmentVisual[] BuildVisuals()
         {
-            SegmentVisual[] visuals = new SegmentVisual[3];
-            visuals[0] = SegmentFactory.CreateQuota(
-                _quotaSnapshot,
-                _settings.General.PrivacyMode);
-            visuals[1] = SegmentFactory.CreateGit(
-                _gitSnapshot,
-                _settings.General.PrivacyMode);
-            visuals[2] = SegmentFactory.CreateAgent(
-                _agentSnapshot,
-                _agentSessions,
-                _settings.General.PrivacyMode);
-            return visuals;
+            List<SegmentVisual> visuals = new List<SegmentVisual>();
+
+            if (_settings.Ui.ShowQuota)
+            {
+                visuals.Add(SegmentFactory.CreateQuota(
+                    _quotaSnapshot,
+                    _settings.General.PrivacyMode));
+            }
+
+            if (_settings.Ui.ShowGit)
+            {
+                visuals.Add(SegmentFactory.CreateGit(
+                    _gitSnapshot,
+                    _settings.General.PrivacyMode));
+            }
+
+            if (_settings.Ui.ShowAgent)
+            {
+                visuals.Add(SegmentFactory.CreateAgent(
+                    _agentSnapshot,
+                    _agentSessions,
+                    _settings.General.PrivacyMode));
+            }
+
+            // 防御：所有模块都被关闭时至少保留额度，避免任务栏出现空条。
+            if (visuals.Count == 0)
+            {
+                visuals.Add(SegmentFactory.CreateQuota(
+                    _quotaSnapshot,
+                    _settings.General.PrivacyMode));
+            }
+
+            return visuals.ToArray();
         }
 
         private DetailSection[] BuildDetailSections()
         {
             List<DetailSection> sections = new List<DetailSection>();
 
-            if (_quotaSnapshot != null)
+            if (_settings.Ui.ShowQuota && _quotaSnapshot != null)
             {
                 DetailSection quotaSection = SegmentFactory.CreateQuotaDetail(
                     _quotaSnapshot,
@@ -271,7 +296,7 @@ namespace VibeBar
                 sections.Add(quotaSection);
             }
 
-            if (_gitSnapshot != null)
+            if (_settings.Ui.ShowGit && _gitSnapshot != null)
             {
                 DetailSection gitSection = SegmentFactory.CreateGitDetail(
                     _gitSnapshot,
@@ -281,7 +306,9 @@ namespace VibeBar
             }
 
             // 无活动会话时不显示空白区块。
-            if (_agentSessions != null && _agentSessions.Length > 0)
+            if (_settings.Ui.ShowAgent
+                && _agentSessions != null
+                && _agentSessions.Length > 0)
             {
                 DetailSection agentSection = SegmentFactory.CreateAgentDetail(
                     _agentSessions,
@@ -971,6 +998,7 @@ namespace VibeBar
 
         private void ApplySettingsChange()
         {
+            UiSettings.Normalize(_settings.Ui);
             SegmentFactory.Configure(
                 _settings.Quota.WarnBelow,
                 _settings.Quota.CriticalBelow);
@@ -1007,11 +1035,20 @@ namespace VibeBar
                 _tray.UpdatePrivacy(_settings.General.PrivacyMode);
             }
 
+            if (_strip != null)
+            {
+                _strip.SetHoverStyle(
+                    _settings.Ui.HoverColor,
+                    _settings.Ui.HoverOpacity);
+            }
+
             if (_host != null && !_host.IsDestroyed)
             {
                 _host.SetWidthLimits(
                     _settings.Ui.MaxWidth,
                     _settings.Ui.MinWidth);
+                _host.SetOffsetX(_settings.Ui.OffsetX);
+                _host.RefreshLayout();
             }
 
             ApplyVisibility(_settings.General.ShowTaskbar);
@@ -1067,10 +1104,14 @@ namespace VibeBar
             TaskbarStrip strip = new TaskbarStrip(BuildVisuals());
             strip.HoverChanged += OnStripHoverChanged;
             strip.SegmentClicked += OnSegmentClicked;
+            strip.SetHoverStyle(
+                _settings.Ui.HoverColor,
+                _settings.Ui.HoverOpacity);
 
             _strip = strip;
             _host = new TaskbarHost(strip);
             _host.SetWidthLimits(_settings.Ui.MaxWidth, _settings.Ui.MinWidth);
+            _host.SetOffsetX(_settings.Ui.OffsetX);
             _panel.SetSections(BuildDetailSections());
             _visualSignature = string.Empty;
             _detailSignature = string.Empty;

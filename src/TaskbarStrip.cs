@@ -35,6 +35,8 @@ namespace VibeBar
 
         private SegmentVisual[] _visuals;
         private bool _hovered;
+        private Color? _customHoverColor;
+        private double _hoverTargetOpacity = 235.0 / 255.0;
         private bool _hasAvailableWidth;
         private double _availableWidth = double.PositiveInfinity;
         private double _minWidth = 120.0;
@@ -73,6 +75,89 @@ namespace VibeBar
         internal SegmentVisual[] GetVisuals()
         {
             return _visuals;
+        }
+
+        /// <summary>
+        /// 自定义悬停背景。colorText 为空或非法时跟随系统主题色；
+        /// opacity 为 0-255，0 表示悬停时也完全透明。
+        /// </summary>
+        internal void SetHoverStyle(string colorText, int opacity)
+        {
+            Color parsed;
+            if (TryParseColor(colorText, out parsed))
+            {
+                _customHoverColor = parsed;
+            }
+            else
+            {
+                _customHoverColor = null;
+            }
+
+            if (opacity < 0)
+            {
+                opacity = 0;
+            }
+            else if (opacity > 255)
+            {
+                opacity = 255;
+            }
+
+            _hoverTargetOpacity = opacity / 255.0;
+            ApplyTheme();
+
+            if (_hovered)
+            {
+                _backgroundBrush.BeginAnimation(
+                    Brush.OpacityProperty,
+                    new DoubleAnimation(
+                        _hoverTargetOpacity,
+                        new Duration(TimeSpan.FromMilliseconds(1))));
+            }
+        }
+
+        private static bool TryParseColor(string text, out Color color)
+        {
+            color = Colors.Transparent;
+            if (string.IsNullOrEmpty(text))
+            {
+                return false;
+            }
+
+            string value = text.Trim();
+            if (!value.StartsWith("#", StringComparison.Ordinal))
+            {
+                value = "#" + value;
+            }
+
+            if (value.Length != 7)
+            {
+                return false;
+            }
+
+            int red;
+            int green;
+            int blue;
+            if (!int.TryParse(
+                    value.Substring(1, 2),
+                    NumberStyles.HexNumber,
+                    CultureInfo.InvariantCulture,
+                    out red)
+                || !int.TryParse(
+                    value.Substring(3, 2),
+                    NumberStyles.HexNumber,
+                    CultureInfo.InvariantCulture,
+                    out green)
+                || !int.TryParse(
+                    value.Substring(5, 2),
+                    NumberStyles.HexNumber,
+                    CultureInfo.InvariantCulture,
+                    out blue))
+            {
+                return false;
+            }
+
+            color = Color.FromRgb((byte)red, (byte)green, (byte)blue);
+            return true;
         }
 
         internal bool ContentHidden
@@ -122,7 +207,18 @@ namespace VibeBar
 
         internal void ApplyTheme()
         {
-            _backgroundBrush.Color = UiTheme.BarBackground;
+            Color baseColor = UiTheme.BarBackground;
+            if (_customHoverColor.HasValue)
+            {
+                baseColor = _customHoverColor.Value;
+            }
+
+            // 颜色只保留 RGB，透明度由 _backgroundBrush.Opacity / 悬停目标值控制，
+            // 避免主题色自带的 alpha 与用户设置的透明度叠加。
+            _backgroundBrush.Color = Color.FromRgb(
+                baseColor.R,
+                baseColor.G,
+                baseColor.B);
 
             for (int index = 0; index < _labels.Count; index++)
             {
@@ -637,7 +733,7 @@ namespace VibeBar
 
             _hovered = hovered;
             DoubleAnimation animation = new DoubleAnimation(
-                hovered ? 1.0 : 1.0 / 255.0,
+                hovered ? _hoverTargetOpacity : 1.0 / 255.0,
                 new Duration(TimeSpan.FromMilliseconds(170)));
             animation.EasingFunction = new CubicEase
             {
