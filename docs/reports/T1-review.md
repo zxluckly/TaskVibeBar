@@ -40,8 +40,8 @@
 
 - 现象：详情面板能显示、鼠标能命中、UIAutomation 能读到三段文字（`IsOffscreen=False`），但屏幕上完全看不到条。
 - 原因：`TaskbarHost` 构造时 `Opacity=0`，依赖首次定位后设为 1；`SetParent` 到任务栏后 WPF 的 `Window.Opacity` 变更可能不再生效，整窗以 alpha=0 合成，文字存在但不可见。
-- 修复：宿主 `Opacity` 始终为 `1`；非悬停透明完全由 `TaskbarStrip` 背景的 `1/255` alpha 承担。已写入《架构与接口.md》的窗口约束与 HOST-12 用例。
-- 复核：重新构建启动后，宿主仍在正确位置，UIAutomation 三段文字可见；最终视觉待用户目视确认。
+- 修复：宿主 `Opacity` 始终为 `1`；非悬停透明完全由 `TaskbarStrip` 背景的 `1/255` alpha 承担。同时按旧电量插件对齐：`OnSourceInitialized` 阶段就 `SetParent`、条高改为 34px 居中。已写入《架构与接口.md》的窗口约束与 HOST-12 用例。
+- 复核：重新构建启动后，宿主仍在正确位置，UIAutomation 三段文字可见；**用户已于 2026-10-22 确认任务栏上可直接看到三段文字**。
 
 ## 三、仍需人工验收
 
