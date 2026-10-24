@@ -98,9 +98,11 @@ bin\VibeBar.Cli.exe
     "minWidth": 120,
     "anchor": "right",
     "offsetX": 8,
-    "showQuota": true,
-    "showGit": true,
-    "showAgent": true,
+    "segments": [
+      { "id": "quota", "enabled": true, "priority": 10 },
+      { "id": "git", "enabled": true, "priority": 20 },
+      { "id": "agent", "enabled": true, "priority": 30 }
+    ],
     "hoverColor": "",
     "hoverOpacity": 235
   }
@@ -110,6 +112,7 @@ bin\VibeBar.Cli.exe
 - 未知键在保存时会保留。
 - `quota.refreshSeconds` 最低 60 秒；`git.pollSeconds` 最低 10 秒。
 - `ui.anchor` 为 `right`（靠右吸附，偏移从托盘左缘算）或 `left`（靠左吸附，偏移从任务栏左缘算）；`ui.offsetX` 为 0–400 px；`ui.hoverColor` 为空表示跟随主题色，格式 `#RRGGBB`；`ui.hoverOpacity` 为 0–255（0 表示悬停也完全透明）。
+- `ui.segments` 控制各信息段的显隐与排序；新增段时注册 Presenter 后会由程序自动补齐默认项，旧版 `showQuota/showGit/showAgent` 会自动迁移。
 - API Key 有两种来源：
   1. 在设置窗口的「API Key」中填写，保存到 `secrets.dat`（DPAPI 加密）；
   2. 勾选「从 Claude Code 配置读取 Key」，运行时从 `%USERPROFILE%\.claude\settings.json` 的 `env.ANTHROPIC_AUTH_TOKEN` 读取，只在内存中使用。
@@ -145,8 +148,24 @@ bin\VibeBar.Cli.exe
 - Git 监听针对当前工作区，超大仓库/网络盘可能需要更长刷新时间。
 - Hook 安装目前只支持 Claude Code 的 `settings.json`。
 
+## 项目结构
+
+```
+src/
+├─ App/        入口、AppController、设置、凭证、日志、Win32
+├─ Models/     数据契约与段视图模型
+├─ Ui/         任务栏宿主、段布局、详情面板、托盘、设置窗口
+├─ Providers/  DeepSeek / Git / Claude 会话取数
+├─ Segments/   段契约、注册表、峰谷、Presenters/
+├─ EventBus/   Hooks 命名管道与安装器
+└─ Cli/        VibeBar.Cli.exe
+```
+
+新增信息显示的标准步骤（Provider → Presenter → 注册 → 设置自动出现开关）见 [CLAUDE.md](CLAUDE.md)。
+
 ## 开发文档
 
+- [项目上下文 CLAUDE.md](CLAUDE.md)
 - [功能设计](功能设计.md)
 - [架构与接口](架构与接口.md)
 - [验收与测试](验收与测试.md)

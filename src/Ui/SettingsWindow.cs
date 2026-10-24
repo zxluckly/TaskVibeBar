@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -31,9 +32,7 @@ namespace VibeBar
         private readonly TextBlock _offsetLabel;
         private readonly TextBox _offsetBox;
         private readonly TextBox _maxWidthBox;
-        private readonly CheckBox _showQuotaBox;
-        private readonly CheckBox _showGitBox;
-        private readonly CheckBox _showAgentBox;
+        private readonly List<CheckBox> _segmentChecks = new List<CheckBox>();
         private readonly CheckBox _hoverThemeBox;
         private readonly TextBox _hoverColorBox;
         private readonly Slider _hoverOpacitySlider;
@@ -43,7 +42,10 @@ namespace VibeBar
 
         internal event EventHandler Saved;
 
-        internal SettingsWindow(AppSettings settings, SettingsStore settingsStore)
+        internal SettingsWindow(
+            AppSettings settings,
+            SettingsStore settingsStore,
+            IList<SegmentDescriptor> segmentDescriptors)
         {
             if (settings == null)
             {
@@ -150,19 +152,30 @@ namespace VibeBar
             _maxWidthBox.HorizontalAlignment = HorizontalAlignment.Left;
             _maxWidthBox.Text = settings.Ui.MaxWidth.ToString();
 
-            _showQuotaBox = new CheckBox();
-            _showQuotaBox.Content = "额度";
-            _showQuotaBox.IsChecked = settings.Ui.ShowQuota;
-            _showQuotaBox.Margin = new Thickness(0, 0, 14, 0);
+            IList<SegmentDescriptor> descriptors = segmentDescriptors;
+            if (descriptors == null || descriptors.Count == 0)
+            {
+                descriptors = new List<SegmentDescriptor>();
+                descriptors.Add(new SegmentDescriptor("quota", "额度", 10));
+                descriptors.Add(new SegmentDescriptor("git", "Git", 20));
+                descriptors.Add(new SegmentDescriptor("agent", "Claude 会话", 30));
+            }
 
-            _showGitBox = new CheckBox();
-            _showGitBox.Content = "Git";
-            _showGitBox.IsChecked = settings.Ui.ShowGit;
-            _showGitBox.Margin = new Thickness(0, 0, 14, 0);
+            for (int index = 0; index < descriptors.Count; index++)
+            {
+                SegmentDescriptor descriptor = descriptors[index];
+                if (descriptor == null || string.IsNullOrEmpty(descriptor.Id))
+                {
+                    continue;
+                }
 
-            _showAgentBox = new CheckBox();
-            _showAgentBox.Content = "会话";
-            _showAgentBox.IsChecked = settings.Ui.ShowAgent;
+                CheckBox box = new CheckBox();
+                box.Content = descriptor.DisplayName;
+                box.Tag = descriptor.Id;
+                box.IsChecked = settings.Ui.IsSegmentEnabled(descriptor.Id);
+                box.Margin = new Thickness(0, 0, 14, 0);
+                _segmentChecks.Add(box);
+            }
 
             _hoverThemeBox = new CheckBox();
             _hoverThemeBox.Content = "跟随系统主题色";
@@ -302,9 +315,10 @@ namespace VibeBar
             moduleLabel.Width = 150;
             moduleLabel.VerticalAlignment = VerticalAlignment.Center;
             moduleRow.Children.Add(moduleLabel);
-            moduleRow.Children.Add(_showQuotaBox);
-            moduleRow.Children.Add(_showGitBox);
-            moduleRow.Children.Add(_showAgentBox);
+            for (int index = 0; index < _segmentChecks.Count; index++)
+            {
+                moduleRow.Children.Add(_segmentChecks[index]);
+            }
             root.Children.Add(moduleRow);
             AddHint(root, "靠右时偏移从托盘左缘算，靠左时从任务栏左缘算；宽度不足时自动折叠为 +N。至少保留一个模块。");
 
@@ -886,10 +900,17 @@ namespace VibeBar
                 return;
             }
 
-            bool showQuota = _showQuotaBox.IsChecked == true;
-            bool showGit = _showGitBox.IsChecked == true;
-            bool showAgent = _showAgentBox.IsChecked == true;
-            if (!showQuota && !showGit && !showAgent)
+            bool anySegmentEnabled = false;
+            for (int index = 0; index < _segmentChecks.Count; index++)
+            {
+                if (_segmentChecks[index].IsChecked == true)
+                {
+                    anySegmentEnabled = true;
+                    break;
+                }
+            }
+
+            if (!anySegmentEnabled)
             {
                 MessageBox.Show(
                     this,
@@ -918,9 +939,16 @@ namespace VibeBar
             _settings.Ui.Anchor = GetSelectedAnchor();
             _settings.Ui.OffsetX = offsetX;
             _settings.Ui.MaxWidth = maxWidth;
-            _settings.Ui.ShowQuota = showQuota;
-            _settings.Ui.ShowGit = showGit;
-            _settings.Ui.ShowAgent = showAgent;
+            for (int index = 0; index < _segmentChecks.Count; index++)
+            {
+                CheckBox box = _segmentChecks[index];
+                string id = box.Tag as string;
+                if (!string.IsNullOrEmpty(id))
+                {
+                    _settings.Ui.SetSegmentEnabled(id, box.IsChecked == true);
+                }
+            }
+
             _settings.Ui.HoverColor = hoverColor;
             _settings.Ui.HoverOpacity = (int)Math.Round(
                 _hoverOpacitySlider.Value * 255.0 / 100.0);

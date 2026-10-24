@@ -12,7 +12,7 @@ namespace VibeBar
     /// 总装配：设置、Provider 调度、任务栏宿主、详情面板、托盘与生命周期。
     /// Provider 结果在后台线程产生，统一经 Dispatcher 回到 UI。
     /// </summary>
-    internal sealed class AppController
+    internal sealed class AppController : ISegmentActionHost
     {
         private readonly Application _app;
         private readonly Dispatcher _dispatcher;
@@ -28,11 +28,12 @@ namespace VibeBar
         private DeepSeekQuotaProvider _quotaProvider;
         private GitProvider _gitProvider;
         private QuotaSnapshot _quotaSnapshot;
-        private GitSnapshot _gitSnapshot;
         private AgentProvider _agentProvider;
         private EventServer _eventServer;
-        private AgentSnapshot _agentSnapshot;
-        private AgentSnapshot[] _agentSessions;
+        private SegmentRegistry _segments;
+        private QuotaSegmentPresenter _quotaPresenter;
+        private GitSegmentPresenter _gitPresenter;
+        private AgentSegmentPresenter _agentPresenter;
         private DispatcherTimer _clockTimer;
         private SettingsWindow _settingsWindow;
         private string _visualSignature = string.Empty;
@@ -86,6 +87,15 @@ namespace VibeBar
 
         private void CreateUi()
         {
+            _segments = new SegmentRegistry();
+            _quotaPresenter = new QuotaSegmentPresenter(this);
+            _gitPresenter = new GitSegmentPresenter(this);
+            _agentPresenter = new AgentSegmentPresenter();
+            _segments.Register(_quotaPresenter);
+            _segments.Register(_gitPresenter);
+            _segments.Register(_agentPresenter);
+            _segments.EnsureSettingDefaults(_settings);
+
             _strip = new TaskbarStrip(BuildVisuals());
             _strip.HoverChanged += OnStripHoverChanged;
             _strip.SegmentClicked += OnSegmentClicked;
@@ -190,15 +200,14 @@ namespace VibeBar
 
         private void RefreshAgentCache()
         {
-            if (_agentProvider == null)
+            if (_agentProvider == null || _agentPresenter == null)
             {
-                _agentSnapshot = null;
-                _agentSessions = null;
                 return;
             }
 
-            _agentSnapshot = _agentProvider.GetAggregateSnapshot();
-            _agentSessions = _agentProvider.GetSessionSnapshots();
+            _agentPresenter.Update(
+                _agentProvider.GetAggregateSnapshot(),
+                _agentProvider.GetSessionSnapshots());
         }
 
         private void OnGitRefreshSuggested()
@@ -249,158 +258,80 @@ namespace VibeBar
 
         private SegmentVisual[] BuildVisuals()
         {
-            List<SegmentVisual> visuals = new List<SegmentVisual>();
-
-            if (_settings.Ui.ShowQuota)
+            if (_segments == null)
             {
-                visuals.Add(SegmentFactory.CreateQuota(
-                    _quotaSnapshot,
-                    _settings.General.PrivacyMode));
+                return new SegmentVisual[0];
             }
 
-            if (_settings.Ui.ShowGit)
-            {
-                visuals.Add(SegmentFactory.CreateGit(
-                    _gitSnapshot,
-                    _settings.General.PrivacyMode));
-            }
-
-            if (_settings.Ui.ShowAgent)
-            {
-                visuals.Add(SegmentFactory.CreateAgent(
-                    _agentSnapshot,
-                    _agentSessions,
-                    _settings.General.PrivacyMode));
-            }
-
-            // 防御：所有模块都被关闭时至少保留额度，避免任务栏出现空条。
-            if (visuals.Count == 0)
-            {
-                visuals.Add(SegmentFactory.CreateQuota(
-                    _quotaSnapshot,
-                    _settings.General.PrivacyMode));
-            }
-
-            return visuals.ToArray();
+            return _segments.BuildVisuals(
+                _settings,
+                _settings.General.PrivacyMode);
         }
 
         private DetailSection[] BuildDetailSections()
         {
-            List<DetailSection> sections = new List<DetailSection>();
-
-            if (_settings.Ui.ShowQuota && _quotaSnapshot != null)
+            if (_segments == null)
             {
-                DetailSection quotaSection = SegmentFactory.CreateQuotaDetail(
-                    _quotaSnapshot,
-                    _settings.General.PrivacyMode);
-                quotaSection.Actions = BuildQuotaActions();
-                sections.Add(quotaSection);
+                return new DetailSection[0];
             }
 
-            if (_settings.Ui.ShowGit && _gitSnapshot != null)
-            {
-                DetailSection gitSection = SegmentFactory.CreateGitDetail(
-                    _gitSnapshot,
-                    _settings.General.PrivacyMode);
-                gitSection.Actions = BuildGitActions(_gitSnapshot);
-                sections.Add(gitSection);
-            }
-
-            // 无活动会话时不显示空白区块。
-            if (_settings.Ui.ShowAgent
-                && _agentSessions != null
-                && _agentSessions.Length > 0)
-            {
-                DetailSection agentSection = SegmentFactory.CreateAgentDetail(
-                    _agentSessions,
-                    _settings.General.PrivacyMode);
-                agentSection.Actions = new DetailAction[0];
-                sections.Add(agentSection);
-            }
-
-            return sections.ToArray();
+            return _segments.BuildDetails(
+                _settings,
+                _settings.General.PrivacyMode);
         }
 
-        private DetailAction[] BuildQuotaActions()
-        {
-            return new DetailAction[]
-            {
-                CreateAction("打开用量页", delegate { OpenUsagePage(); }),
-                CreateAction("刷新", delegate { RefreshQuotaNow(); })
-            };
-        }
-
-        private DetailAction[] BuildGitActions(GitSnapshot snapshot)
-        {
-            DetailAction openFolder = new DetailAction();
-            openFolder.Label = "打开目录";
-            string repoPath = snapshot == null ? null : snapshot.RepoPath;
-            if (!string.IsNullOrEmpty(repoPath))
-            {
-                string capturedPath = repoPath;
-                openFolder.Handler = delegate { OpenFolder(capturedPath); };
-            }
-
-            DetailAction copyBranch = new DetailAction();
-            copyBranch.Label = "复制分支";
-            string branch = snapshot == null ? null : snapshot.Branch;
-            if (!string.IsNullOrEmpty(branch)
-                && snapshot != null
-                && !snapshot.IsDetached)
-            {
-                string capturedBranch = branch;
-                copyBranch.Handler = delegate { CopyText(capturedBranch); };
-            }
-
-            return new DetailAction[] { openFolder, copyBranch };
-        }
-
-        private static DetailAction CreateAction(string label, Action handler)
-        {
-            DetailAction action = new DetailAction();
-            action.Label = label;
-            action.Handler = handler;
-            return action;
-        }
-
-        private void OpenUsagePage()
-        {
-            try
-            {
-                ProcessStartInfo info = new ProcessStartInfo(
-                    "https://platform.deepseek.com/usage");
-                info.UseShellExecute = true;
-                Process.Start(info);
-            }
-            catch (Exception exception)
-            {
-                Log.Error("打开用量页失败", exception);
-                if (_tray != null)
-                {
-                    _tray.ShowError("无法打开用量页，详见日志");
-                }
-            }
-        }
-
-        private void RefreshQuotaNow()
+        public void RefreshProvider(string providerId)
         {
             ProviderScheduler scheduler = _scheduler;
-            if (scheduler == null)
+            if (scheduler == null || string.IsNullOrEmpty(providerId))
             {
                 return;
             }
 
             try
             {
-                scheduler.Refresh(DeepSeekQuotaProvider.ProviderIdValue);
+                scheduler.Refresh(providerId);
             }
             catch (Exception exception)
             {
-                Log.Write("手动刷新额度失败：" + exception.GetType().Name);
+                Log.Write("手动刷新失败：" + exception.GetType().Name);
             }
         }
 
-        private void OpenFolder(string path)
+        public void OpenUrl(string url)
+        {
+            if (string.IsNullOrEmpty(url))
+            {
+                return;
+            }
+
+            try
+            {
+                ProcessStartInfo info = new ProcessStartInfo(url);
+                info.UseShellExecute = true;
+                Process.Start(info);
+            }
+            catch (Exception exception)
+            {
+                Log.Error("打开链接失败", exception);
+                if (_tray != null)
+                {
+                    _tray.ShowError("无法打开链接，详见日志");
+                }
+            }
+        }
+
+        public void ShowSettings()
+        {
+            if (_exiting)
+            {
+                return;
+            }
+
+            _dispatcher.BeginInvoke(new Action(ShowSettingsWindow));
+        }
+
+        public void OpenFolder(string path)
         {
             if (string.IsNullOrEmpty(path))
             {
@@ -432,7 +363,7 @@ namespace VibeBar
             }
         }
 
-        private void CopyText(string text)
+        public void CopyText(string text)
         {
             if (string.IsNullOrEmpty(text))
             {
@@ -664,14 +595,16 @@ namespace VibeBar
 
         private void ApplyAgentResult(ProviderResult result)
         {
-            _agentSnapshot = result.Snapshot as AgentSnapshot;
-            if (_agentProvider == null)
+            if (_agentPresenter == null)
             {
-                _agentSessions = null;
                 return;
             }
 
-            _agentSessions = _agentProvider.GetSessionSnapshots();
+            AgentSnapshot aggregate = result.Snapshot as AgentSnapshot;
+            AgentSnapshot[] sessions = _agentProvider == null
+                ? new AgentSnapshot[0]
+                : _agentProvider.GetSessionSnapshots();
+            _agentPresenter.Update(aggregate, sessions);
         }
 
         private void ApplyQuotaResult(ProviderResult result)
@@ -700,39 +633,49 @@ namespace VibeBar
             }
 
             RecomputePeak(_quotaSnapshot);
+
+            if (_quotaPresenter != null)
+            {
+                _quotaPresenter.Update(_quotaSnapshot);
+            }
         }
 
         private void ApplyGitResult(ProviderResult result)
         {
-            GitSnapshot snapshot = result.Snapshot as GitSnapshot;
-            if (snapshot != null)
+            if (_gitPresenter == null)
             {
-                _gitSnapshot = snapshot;
                 return;
             }
 
-            // 调度器兜底错误（超时/异常）没有快照，构造一个错误态，
-            // 段显示「Git —」，面板给出原因，绝不显示 0。
-            if (_gitSnapshot == null)
+            GitSnapshot snapshot = result.Snapshot as GitSnapshot;
+            if (snapshot == null)
             {
-                _gitSnapshot = new GitSnapshot();
-                _gitSnapshot.RepoPath = _settings.Git.RepoPath == null
-                    ? string.Empty
-                    : _settings.Git.RepoPath;
-                _gitSnapshot.RepoName = GitProvider.GetRepoName(_gitSnapshot.RepoPath);
-                _gitSnapshot.Branch = string.Empty;
-                _gitSnapshot.Operation = string.Empty;
+                // 调度器兜底错误（超时/异常）没有快照，构造/复用错误态，
+                // 段显示「Git —」，面板给出原因，绝不显示 0。
+                snapshot = _gitPresenter.Snapshot;
+                if (snapshot == null)
+                {
+                    snapshot = new GitSnapshot();
+                    snapshot.RepoPath = _settings.Git.RepoPath == null
+                        ? string.Empty
+                        : _settings.Git.RepoPath;
+                    snapshot.RepoName = GitProvider.GetRepoName(snapshot.RepoPath);
+                    snapshot.Branch = string.Empty;
+                    snapshot.Operation = string.Empty;
+                }
+
+                snapshot.Health = result.Health == SnapshotHealth.Live
+                    ? SnapshotHealth.Error
+                    : result.Health;
+                snapshot.Error = string.IsNullOrEmpty(result.Error)
+                    ? "数据源异常"
+                    : result.Error;
+                snapshot.UpdatedUtc = result.UpdatedUtc == default(DateTime)
+                    ? DateTime.UtcNow
+                    : result.UpdatedUtc;
             }
 
-            _gitSnapshot.Health = result.Health == SnapshotHealth.Live
-                ? SnapshotHealth.Error
-                : result.Health;
-            _gitSnapshot.Error = string.IsNullOrEmpty(result.Error)
-                ? "数据源异常"
-                : result.Error;
-            _gitSnapshot.UpdatedUtc = result.UpdatedUtc == default(DateTime)
-                ? DateTime.UtcNow
-                : result.UpdatedUtc;
+            _gitPresenter.Update(snapshot);
         }
 
         private static QuotaSnapshot CreateSchedulerErrorSnapshot(string error)
@@ -957,7 +900,12 @@ namespace VibeBar
                 return;
             }
 
-            SettingsWindow window = new SettingsWindow(_settings, _settingsStore);
+            SettingsWindow window = new SettingsWindow(
+                _settings,
+                _settingsStore,
+                _segments == null
+                    ? new List<SegmentDescriptor>()
+                    : _segments.GetDescriptors());
             window.Saved += OnSettingsSaved;
             _settingsWindow = window;
 
@@ -1000,6 +948,11 @@ namespace VibeBar
         private void ApplySettingsChange()
         {
             UiSettings.Normalize(_settings.Ui);
+            if (_segments != null)
+            {
+                _segments.EnsureSettingDefaults(_settings);
+            }
+
             SegmentFactory.Configure(
                 _settings.Quota.WarnBelow,
                 _settings.Quota.CriticalBelow);
@@ -1267,10 +1220,11 @@ namespace VibeBar
             _quotaProvider = null;
             _quotaSnapshot = null;
             _gitProvider = null;
-            _gitSnapshot = null;
             _agentProvider = null;
-            _agentSnapshot = null;
-            _agentSessions = null;
+            _quotaPresenter = null;
+            _gitPresenter = null;
+            _agentPresenter = null;
+            _segments = null;
 
             Theme.Changed -= OnThemeChanged;
             Theme.Shutdown();

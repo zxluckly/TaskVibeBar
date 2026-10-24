@@ -75,22 +75,124 @@ namespace VibeBar
         public int StaleMinutes = 10;
     }
 
+    internal sealed class SegmentSetting
+    {
+        public string Id;
+        public bool Enabled = true;
+        public int Priority;
+    }
+
     internal sealed class UiSettings
     {
         public int MaxWidth = 420;
         public int MinWidth = 120;
 
-        // 显示区域：吸附方向、水平偏移（px）与模块显隐。
+        // 显示区域：吸附方向、水平偏移（px）。
         // Anchor = "right" 时偏移从托盘左缘算；"left" 时从任务栏左缘算。
         public string Anchor = "right";
         public int OffsetX = 8;
-        public bool ShowQuota = true;
-        public bool ShowGit = true;
-        public bool ShowAgent = true;
+
+        // 段的显隐/顺序。新增信息显示时由 AppController 的注册表补齐默认项。
+        public List<SegmentSetting> Segments = new List<SegmentSetting>();
 
         // 悬停背景：空字符串表示跟随系统主题色；HoverOpacity 0-255。
         public string HoverColor = string.Empty;
         public int HoverOpacity = 235;
+
+        internal bool IsSegmentEnabled(string id)
+        {
+            SegmentSetting setting = FindSegment(id);
+            return setting == null || setting.Enabled;
+        }
+
+        internal int GetSegmentPriority(string id, int fallback)
+        {
+            SegmentSetting setting = FindSegment(id);
+            if (setting == null || setting.Priority <= 0)
+            {
+                return fallback;
+            }
+
+            return setting.Priority;
+        }
+
+        internal void SetSegmentEnabled(string id, bool enabled)
+        {
+            if (string.IsNullOrEmpty(id))
+            {
+                return;
+            }
+
+            SegmentSetting setting = FindSegment(id);
+            if (setting == null)
+            {
+                setting = new SegmentSetting();
+                setting.Id = id;
+                Segments.Add(setting);
+            }
+
+            setting.Enabled = enabled;
+        }
+
+        internal void EnsureSegments(IList<SegmentDescriptor> descriptors)
+        {
+            if (descriptors == null)
+            {
+                return;
+            }
+
+            bool anyEnabled = false;
+            for (int index = 0; index < descriptors.Count; index++)
+            {
+                SegmentDescriptor descriptor = descriptors[index];
+                if (descriptor == null || string.IsNullOrEmpty(descriptor.Id))
+                {
+                    continue;
+                }
+
+                SegmentSetting setting = FindSegment(descriptor.Id);
+                if (setting == null)
+                {
+                    setting = new SegmentSetting();
+                    setting.Id = descriptor.Id;
+                    setting.Enabled = true;
+                    setting.Priority = descriptor.DefaultPriority;
+                    Segments.Add(setting);
+                }
+                else if (setting.Priority <= 0)
+                {
+                    setting.Priority = descriptor.DefaultPriority;
+                }
+
+                anyEnabled = anyEnabled || setting.Enabled;
+            }
+
+            // 防御：所有已知段都被关闭时，至少启用第一个。
+            if (!anyEnabled && descriptors.Count > 0 && descriptors[0] != null)
+            {
+                SetSegmentEnabled(descriptors[0].Id, true);
+            }
+        }
+
+        internal SegmentSetting FindSegment(string id)
+        {
+            if (string.IsNullOrEmpty(id))
+            {
+                return null;
+            }
+
+            for (int index = 0; index < Segments.Count; index++)
+            {
+                SegmentSetting setting = Segments[index];
+                if (setting != null
+                    && string.Equals(setting.Id, id, StringComparison.Ordinal))
+                {
+                    return setting;
+                }
+            }
+
+            return null;
+        }
 
         internal static void Normalize(UiSettings settings)
         {
@@ -150,9 +252,35 @@ namespace VibeBar
 
             settings.HoverColor = NormalizeColor(settings.HoverColor);
 
-            if (!settings.ShowQuota && !settings.ShowGit && !settings.ShowAgent)
+            for (int index = settings.Segments.Count - 1; index >= 0; index--)
             {
-                settings.ShowQuota = true;
+                SegmentSetting setting = settings.Segments[index];
+                if (setting == null || string.IsNullOrEmpty(setting.Id))
+                {
+                    settings.Segments.RemoveAt(index);
+                    continue;
+                }
+
+                if (setting.Priority < 0)
+                {
+                    setting.Priority = 0;
+                }
+                else if (setting.Priority > 1000)
+                {
+                    setting.Priority = 1000;
+                }
+
+                // 去掉重复 id，保留第一个。
+                for (int earlier = 0; earlier < index; earlier++)
+                {
+                    SegmentSetting other = settings.Segments[earlier];
+                    if (other != null
+                        && string.Equals(other.Id, setting.Id, StringComparison.Ordinal))
+                    {
+                        settings.Segments.RemoveAt(index);
+                        break;
+                    }
+                }
             }
         }
 
@@ -332,9 +460,11 @@ namespace VibeBar
                 ui["minWidth"] = settings.Ui.MinWidth;
                 ui["anchor"] = settings.Ui.Anchor;
                 ui["offsetX"] = settings.Ui.OffsetX;
-                ui["showQuota"] = settings.Ui.ShowQuota;
-                ui["showGit"] = settings.Ui.ShowGit;
-                ui["showAgent"] = settings.Ui.ShowAgent;
+                ui["segments"] = BuildSegments(settings.Ui.Segments);
+                // 旧版三键不再写出。
+                ui.Remove("showQuota");
+                ui.Remove("showGit");
+                ui.Remove("showAgent");
                 ui["hoverColor"] = settings.Ui.HoverColor;
                 ui["hoverOpacity"] = settings.Ui.HoverOpacity;
 
@@ -411,9 +541,7 @@ namespace VibeBar
                 settings.Ui.MinWidth = GetInt(ui, "minWidth", 120);
                 settings.Ui.Anchor = GetString(ui, "anchor", "right");
                 settings.Ui.OffsetX = GetInt(ui, "offsetX", 8);
-                settings.Ui.ShowQuota = GetBool(ui, "showQuota", true);
-                settings.Ui.ShowGit = GetBool(ui, "showGit", true);
-                settings.Ui.ShowAgent = GetBool(ui, "showAgent", true);
+                ApplySegments(settings.Ui, ui);
                 settings.Ui.HoverColor = GetString(ui, "hoverColor", string.Empty);
                 settings.Ui.HoverOpacity = GetInt(ui, "hoverOpacity", 235);
             }
@@ -427,6 +555,89 @@ namespace VibeBar
                 settings.Hooks.StatusLineInstalled =
                     GetBool(hooks, "statusLineInstalled", false);
             }
+        }
+
+        private static object[] BuildSegments(List<SegmentSetting> segments)
+        {
+            if (segments == null)
+            {
+                return new object[0];
+            }
+
+            object[] result = new object[segments.Count];
+            for (int index = 0; index < segments.Count; index++)
+            {
+                SegmentSetting setting = segments[index];
+                Dictionary<string, object> item = new Dictionary<string, object>();
+                if (setting != null)
+                {
+                    item["id"] = setting.Id;
+                    item["enabled"] = setting.Enabled;
+                    item["priority"] = setting.Priority;
+                }
+
+                result[index] = item;
+            }
+
+            return result;
+        }
+
+        private static void ApplySegments(
+            UiSettings settings,
+            Dictionary<string, object> ui)
+        {
+            object value;
+            if (ui.TryGetValue("segments", out value) && value != null)
+            {
+                object[] items = value as object[];
+                if (items != null)
+                {
+                    for (int index = 0; index < items.Length; index++)
+                    {
+                        Dictionary<string, object> item =
+                            items[index] as Dictionary<string, object>;
+                        if (item == null)
+                        {
+                            continue;
+                        }
+
+                        object idValue;
+                        if (!item.TryGetValue("id", out idValue)
+                            || !(idValue is string)
+                            || string.IsNullOrEmpty((string)idValue))
+                        {
+                            continue;
+                        }
+
+                        SegmentSetting setting = new SegmentSetting();
+                        setting.Id = (string)idValue;
+                        setting.Enabled = GetBool(item, "enabled", true);
+                        setting.Priority = GetInt(item, "priority", 0);
+                        settings.Segments.Add(setting);
+                    }
+                }
+
+                return;
+            }
+
+            // 兼容 T6 之前的 showQuota/showGit/showAgent。
+            AddLegacySegment(settings, ui, "quota", "showQuota", 10);
+            AddLegacySegment(settings, ui, "git", "showGit", 20);
+            AddLegacySegment(settings, ui, "agent", "showAgent", 30);
+        }
+
+        private static void AddLegacySegment(
+            UiSettings settings,
+            Dictionary<string, object> ui,
+            string id,
+            string legacyKey,
+            int priority)
+        {
+            SegmentSetting setting = new SegmentSetting();
+            setting.Id = id;
+            setting.Enabled = GetBool(ui, legacyKey, true);
+            setting.Priority = priority;
+            settings.Segments.Add(setting);
         }
 
         private static object[] BuildPeakWindows(
