@@ -79,7 +79,9 @@ namespace VibeBar
                 return 0;
             }
 
+            Diag("statusline invoked len=" + payload.Length);
             SendToPipe(payload, EventProtocol.StatusLineKind);
+            Diag("statusline sent");
             PassThroughOriginalStatusLine(payload);
             return 0;
         }
@@ -99,6 +101,7 @@ namespace VibeBar
                     int error = Marshal.GetLastWin32Error();
                     if (error == ErrorFileNotFound)
                     {
+                        Diag("pipe not found");
                         return;
                     }
                 }
@@ -124,9 +127,38 @@ namespace VibeBar
                     client.Flush();
                 }
             }
-            catch
+            catch (Exception exception)
             {
                 // 事件桥失败不能影响 Claude Code；statusLine 仍会走原命令透传。
+                Diag("send error " + exception.GetType().Name);
+            }
+        }
+
+        private static void Diag(string message)
+        {
+            try
+            {
+                string folder = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "VibeBar");
+                Directory.CreateDirectory(folder);
+                string path = Path.Combine(folder, "statusline-diag.log");
+                FileInfo info = new FileInfo(path);
+                if (info.Exists && info.Length > 128 * 1024)
+                {
+                    return;
+                }
+
+                File.AppendAllText(
+                    path,
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")
+                        + " "
+                        + message
+                        + Environment.NewLine,
+                    new UTF8Encoding(false));
+            }
+            catch
+            {
             }
         }
 
