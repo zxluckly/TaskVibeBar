@@ -20,3 +20,8 @@ docs/screenshots/
 .vs/
 *.user
 *.suo
+/docs/reports
+WPF任务栏嵌入.md
+功能设计.md
+架构与接口.md
+验收与测试.md
