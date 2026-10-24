@@ -383,6 +383,17 @@ namespace VibeBar
             }
 
             visual.Text = AgentStateText(current.State, current.CurrentTool);
+            if (current.ContextUsedPercent.HasValue
+                && (current.State == AgentState.Idle
+                    || current.State == AgentState.Done))
+            {
+                visual.Text = visual.Text
+                    + " "
+                    + Math.Round(current.ContextUsedPercent.Value)
+                        .ToString("0", CultureInfo.InvariantCulture)
+                    + "%";
+            }
+
             visual.Role = AgentStateRole(current.State);
             visual.Pulse = current.State == AgentState.WaitingPermission;
 
@@ -390,6 +401,15 @@ namespace VibeBar
             if (!privacy && !string.IsNullOrEmpty(current.ProjectName))
             {
                 tooltip = tooltip + " · " + current.ProjectName;
+            }
+
+            if (current.ContextUsedPercent.HasValue)
+            {
+                tooltip = tooltip
+                    + " · 上下文 "
+                    + Math.Round(current.ContextUsedPercent.Value)
+                        .ToString("0", CultureInfo.InvariantCulture)
+                    + "%";
             }
 
             if (current.IsStale)
@@ -434,6 +454,27 @@ namespace VibeBar
                         projectName
                         + " · "
                         + AgentStateText(session.State, session.CurrentTool));
+
+                    string modelLine = string.Empty;
+                    if (!string.IsNullOrEmpty(session.Model))
+                    {
+                        modelLine = "模型：" + session.Model;
+                    }
+
+                    if (session.ContextUsedPercent.HasValue)
+                    {
+                        string percent = Math.Round(session.ContextUsedPercent.Value)
+                            .ToString("0", CultureInfo.InvariantCulture)
+                            + "%";
+                        modelLine = string.IsNullOrEmpty(modelLine)
+                            ? "上下文：" + percent
+                            : modelLine + " · 上下文 " + percent;
+                    }
+
+                    if (!string.IsNullOrEmpty(modelLine))
+                    {
+                        lines.Add(modelLine);
+                    }
 
                     string lastEvent = session.LastEventUtc == default(DateTime)
                         ? "—"

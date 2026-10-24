@@ -1,9 +1,11 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace VibeBar
 {
@@ -15,8 +17,10 @@ namespace VibeBar
     internal static class CliMain
     {
         private const string HookArgument = "--hook";
+        private const string StatusLineArgument = "--statusline";
         private const int ConnectTimeoutMilliseconds = 250;
         private const int ErrorFileNotFound = 2;
+        private const int OriginalStatusLineTimeoutMilliseconds = 2000;
 
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -38,9 +42,21 @@ namespace VibeBar
 
         private static int Run(string[] args)
         {
-            if (args == null
-                || args.Length == 0
-                || !string.Equals(args[0], HookArgument, StringComparison.OrdinalIgnoreCase))
+            if (args == null || args.Length == 0)
+            {
+                return 0;
+            }
+
+            bool isHook = string.Equals(
+                args[0],
+                HookArgument,
+                StringComparison.OrdinalIgnoreCase);
+            bool isStatusLine = string.Equals(
+                args[0],
+                StatusLineArgument,
+                StringComparison.OrdinalIgnoreCase);
+
+            if (!isHook && !isStatusLine)
             {
                 return 0;
             }
@@ -57,45 +73,148 @@ namespace VibeBar
                 return 0;
             }
 
-            string envelope = EventProtocol.CreateEnvelope(
-                EventProtocol.HookKind,
-                payload);
-            byte[] bytes = new UTF8Encoding(false).GetBytes(envelope + "\n");
-
-            // 快速失败：程序未运行时 WaitNamedPipe(...,0) 立即返回
-            // ERROR_FILE_NOT_FOUND，避免 Connect(250) 固定等待 250ms。
-            string fullPipeName = @"\\.\pipe\" + EventProtocol.PipeName;
-            if (!WaitNamedPipe(fullPipeName, 0))
+            if (isHook)
             {
-                int error = Marshal.GetLastWin32Error();
-                if (error == ErrorFileNotFound)
-                {
-                    return 0;
-                }
+                SendToPipe(payload, EventProtocol.HookKind);
+                return 0;
             }
 
-            using (NamedPipeClientStream client = new NamedPipeClientStream(
-                ".",
-                EventProtocol.PipeName,
-                PipeDirection.Out,
-                PipeOptions.None))
-            {
-                client.Connect(ConnectTimeoutMilliseconds);
-
-                try
-                {
-                    client.WriteTimeout = ConnectTimeoutMilliseconds;
-                }
-                catch
-                {
-                    // 某些平台不支持 PipeStream 写超时；本地管道写入通常瞬时完成。
-                }
-
-                client.Write(bytes, 0, bytes.Length);
-                client.Flush();
-            }
-
+            SendToPipe(payload, EventProtocol.StatusLineKind);
+            PassThroughOriginalStatusLine(payload);
             return 0;
+        }
+
+        private static void SendToPipe(string payload, string kind)
+        {
+            try
+            {
+                string envelope = EventProtocol.CreateEnvelope(kind, payload);
+                byte[] bytes = new UTF8Encoding(false).GetBytes(envelope + "\n");
+
+                // 快速失败：程序未运行时 WaitNamedPipe(...,0) 立即返回
+                // ERROR_FILE_NOT_FOUND，避免 Connect(250) 固定等待 250ms。
+                string fullPipeName = @"\\.\pipe\" + EventProtocol.PipeName;
+                if (!WaitNamedPipe(fullPipeName, 0))
+                {
+                    int error = Marshal.GetLastWin32Error();
+                    if (error == ErrorFileNotFound)
+                    {
+                        return;
+                    }
+                }
+
+                using (NamedPipeClientStream client = new NamedPipeClientStream(
+                    ".",
+                    EventProtocol.PipeName,
+                    PipeDirection.Out,
+                    PipeOptions.None))
+                {
+                    client.Connect(ConnectTimeoutMilliseconds);
+
+                    try
+                    {
+                        client.WriteTimeout = ConnectTimeoutMilliseconds;
+                    }
+                    catch
+                    {
+                        // 某些平台不支持 PipeStream 写超时；本地管道写入通常瞬时完成。
+                    }
+
+                    client.Write(bytes, 0, bytes.Length);
+                    client.Flush();
+                }
+            }
+            catch
+            {
+                // 事件桥失败不能影响 Claude Code；statusLine 仍会走原命令透传。
+            }
+        }
+
+        /// <summary>
+        /// 若用户原本配置了 statusLine，则把同一份 JSON 转发给原命令并原样输出；
+        /// 没有原命令时输出空，保持终端状态栏干净。
+        /// </summary>
+        private static void PassThroughOriginalStatusLine(string payload)
+        {
+            string command = ReadOriginalStatusLineCommand();
+            if (string.IsNullOrEmpty(command))
+            {
+                return;
+            }
+
+            try
+            {
+                ProcessStartInfo info = new ProcessStartInfo(
+                    "cmd.exe",
+                    "/d /s /c \"" + command + "\"");
+                info.UseShellExecute = false;
+                info.CreateNoWindow = true;
+                info.RedirectStandardInput = true;
+                info.RedirectStandardOutput = true;
+                info.RedirectStandardError = true;
+                info.StandardOutputEncoding = new UTF8Encoding(false);
+                info.StandardErrorEncoding = new UTF8Encoding(false);
+
+                using (Process process = Process.Start(info))
+                {
+                    if (process == null)
+                    {
+                        return;
+                    }
+
+                    Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+                    Task<string> stderr = process.StandardError.ReadToEndAsync();
+
+                    process.StandardInput.Write(payload);
+                    process.StandardInput.Close();
+
+                    if (!process.WaitForExit(OriginalStatusLineTimeoutMilliseconds))
+                    {
+                        try
+                        {
+                            process.Kill();
+                        }
+                        catch
+                        {
+                        }
+
+                        return;
+                    }
+
+                    string output = stdout.Result;
+                    if (!string.IsNullOrEmpty(output))
+                    {
+                        Console.Out.Write(output);
+                        Console.Out.Flush();
+                    }
+                }
+            }
+            catch
+            {
+                // 原 statusLine 失败时保持安静，不污染 Claude Code 输出。
+            }
+        }
+
+        private static string ReadOriginalStatusLineCommand()
+        {
+            try
+            {
+                string folder = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "VibeBar");
+                string path = Path.Combine(folder, "statusline-original.txt");
+                if (!File.Exists(path))
+                {
+                    return null;
+                }
+
+                string text = File.ReadAllText(path, Encoding.UTF8);
+                return string.IsNullOrEmpty(text) ? null : text.Trim();
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static string ReadStandardInput()

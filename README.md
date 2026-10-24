@@ -14,6 +14,7 @@ VibeBar 是一个驻留在 Windows 任务栏通知区左侧的轻量状态条，
 | 峰谷判断 | 默认工作日 09:00–12:00、14:00–18:00 为峰时，周末全天谷时；可在 `settings.json` 覆盖 |
 | Git | 显示 `分支*脏数`、`↑领先↓落后`、detached、冲突；文件变化约 2 秒内更新 |
 | Claude 会话 | 通过 Hooks 显示空闲、思考中、工具、等待确认、完成；等待确认时呼吸提示 |
+| 模型与上下文 | 通过 statusLine 显示当前模型、上下文占用百分比；空闲时任务栏段也会带 `34%` |
 | 详情面板 | 额度、Git、会话分区；无数据区块自动隐藏；内容过长可滚动；按钮操作不抢焦点 |
 | 宽度折叠 | 任务栏空间不足时按 Git → 非等待会话 → 额度的顺序折叠为 `+N`，面板仍显示全部 |
 | 显示区域 | 设置中可选靠左/靠右吸附，再调水平偏移与最大宽度，以及额度/Git/会话三个模块的显隐 |
@@ -61,7 +62,7 @@ bin\VibeBar.Cli.exe
 %APPDATA%\VibeBar\
 ├─ settings.json          # 普通配置（不含 API Key）
 ├─ secrets.dat            # DPAPI 加密的 API Key（当前 Windows 用户）
-├─ statusline-original.txt# 预留（v1 未实现 statusLine 透传）
+├─ statusline-original.txt# 用户原有 statusLine 命令（安装时自动备份，卸载恢复）
 └─ log.txt                # 运行日志（自动轮转，日志脱敏）
 ```
 
@@ -118,13 +119,15 @@ bin\VibeBar.Cli.exe
   2. 勾选「从 Claude Code 配置读取 Key」，运行时从 `%USERPROFILE%\.claude\settings.json` 的 `env.ANTHROPIC_AUTH_TOKEN` 读取，只在内存中使用。
 - Key 不会写入 `settings.json`，也不会出现在日志或面板中。
 
-## Claude Code Hooks
+## Claude Code Hooks 与上下文
 
-1. 托盘 →「设置」→「安装 Claude Code Hooks」。
+1. 托盘 →「设置」→「安装 Hooks + statusLine」。
 2. 安装前会在 `%USERPROFILE%\.claude\settings.json` 同目录生成
    `settings.json.vibebar.<yyyyMMddHHmmss>.bak` 备份。
-3. 安装器只添加/移除包含 `VibeBar.Cli.exe` 的条目，保留其他插件与配置。
-4. Hooks 对新启动的 Claude Code 会话生效；已运行的会话需要重启。
+3. 安装器只添加/移除包含 `VibeBar.Cli.exe` 的条目，保留其他插件与配置；
+   statusLine 用于显示模型与上下文占用，用户原有的 statusLine 命令会透传并在卸载时恢复。
+4. Hooks/statusLine 对新启动的 Claude Code 会话生效；已运行的会话需要重启。
+5. `claude -p` 打印模式可能不触发 statusLine；交互式 TUI 会话效果最完整。
 5. 若移动了 VibeBar 程序目录，请在设置中重新执行「安装 Claude Code Hooks」，
    因为 Hooks 中记录的是 CLI 的绝对路径。
 6. 卸载：设置 →「卸载 Hooks」。只移除 VibeBar 条目，不影响其他 Hooks。
@@ -142,7 +145,7 @@ bin\VibeBar.Cli.exe
 ## 已知限制
 
 - 任务栏位置、多显示器、不同 DPI 缩放（125%/150%/200%）仍需在更多环境验证。
-- Claude Code `statusLine`（模型/上下文占用）在 v1 中未实现。
+- `claude -p` 打印模式可能不触发 statusLine；交互式会话才能看到模型/上下文实时更新。
 - 不合并旧的外设电量监控工具。
 - 余额来自 DeepSeek 官方接口；日志、余额等数据只在本地处理，不上传。
 - Git 监听针对当前工作区，超大仓库/网络盘可能需要更长刷新时间。

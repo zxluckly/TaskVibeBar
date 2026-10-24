@@ -7,6 +7,7 @@ VibeBar 是驻留在 Windows 任务栏通知区左侧的轻量信息条，默认
 - **额度**：DeepSeek 余额 + 当前峰/谷时段
 - **Git**：当前仓库分支、脏文件、ahead/behind、冲突
 - **Claude 会话**：通过 Claude Code Hooks 显示空闲/思考/工具/等待确认/完成
+- **模型/上下文**：通过 statusLine 显示当前模型与上下文占用百分比
 
 另有可配置的显示区域（靠左/靠右吸附、偏移、最大宽度、模块显隐）与悬停背景（颜色/透明度）。
 
@@ -118,6 +119,10 @@ src/
 
 ## 七、当前状态
 
-已完成：T1 骨架/任务栏宿主、T2 DeepSeek 额度与峰谷、T3 Git、T4 Hooks/会话、T5 面板/隐私/自启/折叠、T6 显示区域与悬停背景。
+已完成：T1 骨架/任务栏宿主、T2 DeepSeek 额度与峰谷、T3 Git、T4 Hooks/会话、T5 面板/隐私/自启/折叠、T6 显示区域与悬停背景、T7 项目结构/段注册表、T8 statusLine 模型与上下文。
 
-待办（v1）：Claude Code `statusLine` 上下文/模型显示、端口/本地服务段、PR/CI、自定义命令段、多显示器/DPI 完整验收。
+待办（v1）：端口/本地服务段、PR/CI、自定义命令段、多显示器/DPI 完整验收。
+
+> statusLine 注意：CLI 用 `--statusline` 接收官方 JSON（model/context_window），
+> 会优先转发给 `%APPDATA%\VibeBar\statusline-original.txt` 中用户原有的命令并原样输出；
+> 没有原命令时输出空。`claude -p` 可能不触发 statusLine，交互式 TUI 最完整。

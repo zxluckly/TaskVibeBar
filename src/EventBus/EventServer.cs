@@ -360,7 +360,15 @@ namespace VibeBar
                 kind = kindValue as string;
             }
 
-            if (!string.Equals(kind, EventProtocol.HookKind, StringComparison.Ordinal))
+            bool isHook = string.Equals(
+                kind,
+                EventProtocol.HookKind,
+                StringComparison.Ordinal);
+            bool isStatusLine = string.Equals(
+                kind,
+                EventProtocol.StatusLineKind,
+                StringComparison.Ordinal);
+            if (!isHook && !isStatusLine)
             {
                 Log.Debug(
                     "忽略未知事件类型："
@@ -383,11 +391,18 @@ namespace VibeBar
 
             try
             {
-                _agentProvider.Ingest(payload);
+                if (isHook)
+                {
+                    _agentProvider.Ingest(payload);
+                }
+                else
+                {
+                    _agentProvider.IngestStatusLine(payload);
+                }
             }
             catch (Exception exception)
             {
-                Log.Write("处理 Hook 事件失败：" + exception.GetType().Name);
+                Log.Write("处理 Claude 事件失败：" + exception.GetType().Name);
             }
         }
 

@@ -138,6 +138,132 @@ namespace VibeBar
         }
 
         /// <summary>
+        /// 接收 Claude Code statusLine 的 JSON：只更新模型/上下文/cwd，不改变会话状态。
+        /// 会话不存在时创建为空闲会话（用于只安装 statusLine、未装 Hooks 的场景）。
+        /// </summary>
+        internal bool IngestStatusLine(Dictionary<string, object> payload)
+        {
+            if (payload == null)
+            {
+                return false;
+            }
+
+            string sessionId = GetString(payload, "session_id");
+            if (string.IsNullOrEmpty(sessionId))
+            {
+                return false;
+            }
+
+            string cwd = GetString(payload, "cwd");
+            Dictionary<string, object> workspace = GetObject(payload, "workspace");
+            if (string.IsNullOrEmpty(cwd) && workspace != null)
+            {
+                cwd = GetString(workspace, "current_dir");
+                if (string.IsNullOrEmpty(cwd))
+                {
+                    cwd = GetString(workspace, "project_dir");
+                }
+            }
+
+            Dictionary<string, object> model = GetObject(payload, "model");
+            string modelName = model == null ? null : GetString(model, "display_name");
+            if (string.IsNullOrEmpty(modelName) && model != null)
+            {
+                modelName = GetString(model, "id");
+            }
+
+            Dictionary<string, object> context = GetObject(payload, "context_window");
+            double? usedPercent = null;
+            if (context != null)
+            {
+                usedPercent = GetDouble(context, "used_percentage");
+                if (!usedPercent.HasValue)
+                {
+                    usedPercent = GetDouble(context, "used_percent");
+                }
+            }
+
+            DateTime now = DateTime.UtcNow;
+            bool meaningfulChange = false;
+
+            lock (_sync)
+            {
+                if (_disposed)
+                {
+                    return false;
+                }
+
+                SessionState state;
+                if (!_sessions.TryGetValue(sessionId, out state))
+                {
+                    state = new SessionState();
+                    state.SessionId = sessionId;
+                    state.StartedUtc = now;
+                    state.State = AgentState.Idle;
+                    state.Cwd = string.Empty;
+                    state.ProjectName = string.Empty;
+                    state.CurrentTool = string.Empty;
+                    _sessions[sessionId] = state;
+                    meaningfulChange = true;
+                }
+
+                if (!string.IsNullOrEmpty(cwd)
+                    && !string.Equals(state.Cwd, cwd, StringComparison.Ordinal))
+                {
+                    state.Cwd = cwd;
+                    state.ProjectName = CwdProjectName(cwd);
+                    meaningfulChange = true;
+                }
+
+                if (!string.IsNullOrEmpty(modelName)
+                    && !string.Equals(state.Model, modelName, StringComparison.Ordinal))
+                {
+                    state.Model = modelName;
+                    meaningfulChange = true;
+                }
+
+                if (usedPercent.HasValue)
+                {
+                    double value = usedPercent.Value;
+                    if (value < 0)
+                    {
+                        value = 0;
+                    }
+                    else if (value > 100)
+                    {
+                        value = 100;
+                    }
+
+                    // statusLine 刷新很频繁；只有四舍五入后的百分比变化才触发 UI 刷新。
+                    double rounded = Math.Round(value);
+                    double previous = state.ContextUsedPercent.HasValue
+                        ? Math.Round(state.ContextUsedPercent.Value)
+                        : -1;
+                    if (Math.Abs(rounded - previous) >= 0.5)
+                    {
+                        state.ContextUsedPercent = value;
+                        meaningfulChange = true;
+                    }
+                    else if (!state.ContextUsedPercent.HasValue)
+                    {
+                        state.ContextUsedPercent = value;
+                        meaningfulChange = true;
+                    }
+                }
+
+                state.StaleMinutes = _staleMinutes;
+                state.LastEventUtc = now;
+            }
+
+            if (meaningfulChange)
+            {
+                RaiseRefreshSuggested();
+            }
+
+            return meaningfulChange;
+        }
+
+        /// <summary>
         /// 由 AppController 的 1s 定时器推进：Done 保持 30s 后回 Idle；
         /// 超过 staleMinutes 无事件标记 IsStale。返回是否发生变化。
         /// </summary>
@@ -410,8 +536,8 @@ namespace VibeBar
             snapshot.Cwd = state.Cwd == null ? string.Empty : state.Cwd;
             snapshot.State = state.State;
             snapshot.CurrentTool = state.CurrentTool;
-            snapshot.Model = null;
-            snapshot.ContextUsedPercent = null;
+            snapshot.Model = state.Model;
+            snapshot.ContextUsedPercent = state.ContextUsedPercent;
             snapshot.StartedUtc = state.StartedUtc;
             snapshot.LastEventUtc = state.LastEventUtc;
             snapshot.IsStale = state.IsStale
@@ -451,6 +577,70 @@ namespace VibeBar
             }
 
             return value as string;
+        }
+
+        private static Dictionary<string, object> GetObject(
+            Dictionary<string, object> payload,
+            string key)
+        {
+            object value;
+            if (!payload.TryGetValue(key, out value) || value == null)
+            {
+                return null;
+            }
+
+            return value as Dictionary<string, object>;
+        }
+
+        private static double? GetDouble(
+            Dictionary<string, object> payload,
+            string key)
+        {
+            object value;
+            if (!payload.TryGetValue(key, out value) || value == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                if (value is double)
+                {
+                    return (double)value;
+                }
+
+                if (value is decimal)
+                {
+                    return (double)(decimal)value;
+                }
+
+                if (value is int)
+                {
+                    return (int)value;
+                }
+
+                if (value is long)
+                {
+                    return (long)value;
+                }
+
+                string text = value as string;
+                double parsed;
+                if (text != null
+                    && double.TryParse(
+                        text,
+                        NumberStyles.Float,
+                        CultureInfo.InvariantCulture,
+                        out parsed))
+                {
+                    return parsed;
+                }
+            }
+            catch (OverflowException)
+            {
+            }
+
+            return null;
         }
 
         private static bool ContainsAny(string text, string keyword)
@@ -527,6 +717,8 @@ namespace VibeBar
             internal DateTime LastEventUtc;
             internal int StaleMinutes;
             internal bool IsStale;
+            internal string Model;
+            internal double? ContextUsedPercent;
         }
     }
 }

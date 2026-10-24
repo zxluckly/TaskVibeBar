@@ -362,22 +362,23 @@ namespace VibeBar
             root.Children.Add(_hookStatusText);
             AddHint(
                 root,
-                "安装到 %USERPROFILE%\\.claude\\settings.json，安装前会自动备份。"
-                + "Hooks 对已启动的会话不生效，请启动新的 Claude Code 会话。");
+                "安装 Hooks + statusLine 到 %USERPROFILE%\\.claude\\settings.json，"
+                + "安装前会自动备份；statusLine 用于显示模型与上下文占用。"
+                + "对已启动的会话不生效，请启动新的 Claude Code 会话。");
 
             StackPanel hookButtons = new StackPanel();
             hookButtons.Orientation = Orientation.Horizontal;
             hookButtons.Margin = new Thickness(0, 8, 0, 0);
 
             Button installHooksButton = new Button();
-            installHooksButton.Content = "安装 Claude Code Hooks";
-            installHooksButton.Width = 172;
+            installHooksButton.Content = "安装 Hooks + statusLine";
+            installHooksButton.Width = 200;
             installHooksButton.Height = 30;
             installHooksButton.Click += OnInstallHooks;
             hookButtons.Children.Add(installHooksButton);
 
             Button uninstallHooksButton = new Button();
-            uninstallHooksButton.Content = "卸载 Hooks";
+            uninstallHooksButton.Content = "卸载集成";
             uninstallHooksButton.Width = 100;
             uninstallHooksButton.Height = 30;
             uninstallHooksButton.Margin = new Thickness(8, 0, 0, 0);
@@ -676,32 +677,46 @@ namespace VibeBar
         private void RefreshHookStatus()
         {
             bool installed = false;
+            bool statusLineInstalled = false;
             try
             {
                 installed = _hookInstaller.IsInstalled();
+                statusLineInstalled = _hookInstaller.IsStatusLineInstalled();
             }
             catch (Exception exception)
             {
                 Log.Write("检查 Hooks 安装状态失败：" + exception.GetType().Name);
             }
 
-            if (_settings.Hooks.Installed != installed)
-            {
-                _settings.Hooks.Installed = installed;
-            }
+            _settings.Hooks.Installed = installed;
+            _settings.Hooks.StatusLineInstalled = statusLineInstalled;
 
-            _hookStatusText.Text = installed
-                ? "状态：已安装（对新会话生效）"
-                : "状态：未安装";
+            if (installed && statusLineInstalled)
+            {
+                _hookStatusText.Text = "状态：已安装 Hooks + statusLine（对新会话生效）";
+            }
+            else if (installed)
+            {
+                _hookStatusText.Text = "状态：Hooks 已安装，statusLine 未安装";
+            }
+            else if (statusLineInstalled)
+            {
+                _hookStatusText.Text = "状态：statusLine 已安装，Hooks 未安装";
+            }
+            else
+            {
+                _hookStatusText.Text = "状态：未安装";
+            }
         }
 
         private void OnInstallHooks(object sender, RoutedEventArgs e)
         {
             MessageBoxResult confirm = MessageBox.Show(
                 this,
-                "安装前会把 settings.json 备份到同目录。"
-                + "安装后请启动新的 Claude Code 会话，Hooks 才会生效。\n\n是否继续？",
-                "安装 Claude Code Hooks",
+                "将安装 Hooks 与 statusLine（模型/上下文显示）。"
+                + "安装前会把 settings.json 备份到同目录。"
+                + "安装后请启动新的 Claude Code 会话才会生效。\n\n是否继续？",
+                "安装 Claude Code 集成",
                 MessageBoxButton.OKCancel,
                 MessageBoxImage.Question);
             if (confirm != MessageBoxResult.OK)
@@ -732,13 +747,14 @@ namespace VibeBar
             }
 
             _settings.Hooks.Installed = true;
+            _settings.Hooks.StatusLineInstalled = true;
             SaveHookState();
             RefreshHookStatus();
 
             MessageBox.Show(
                 this,
-                "Hooks 已安装。请启动新的 Claude Code 会话后生效。",
-                "安装 Claude Code Hooks",
+                "Hooks 与 statusLine 已安装。请启动新的 Claude Code 会话后生效。",
+                "安装 Claude Code 集成",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
         }
@@ -747,8 +763,8 @@ namespace VibeBar
         {
             MessageBoxResult confirm = MessageBox.Show(
                 this,
-                "将只移除 VibeBar 的 Hooks 条目，其他配置与插件 hooks 不受影响。\n\n是否继续？",
-                "卸载 Hooks",
+                "将移除 VibeBar 的 Hooks 与 statusLine，其他配置与插件 hooks 不受影响。\n\n是否继续？",
+                "卸载 Claude Code 集成",
                 MessageBoxButton.OKCancel,
                 MessageBoxImage.Question);
             if (confirm != MessageBoxResult.OK)
@@ -779,13 +795,14 @@ namespace VibeBar
             }
 
             _settings.Hooks.Installed = false;
+            _settings.Hooks.StatusLineInstalled = false;
             SaveHookState();
             RefreshHookStatus();
 
             MessageBox.Show(
                 this,
-                "Hooks 已卸载。",
-                "卸载 Hooks",
+                "Hooks 与 statusLine 已卸载。",
+                "卸载 Claude Code 集成",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
         }

@@ -17,7 +17,7 @@ namespace VibeBar
         internal const double SeparatorSpacing = 6.0;
         internal const double SeparatorHeight = 14.0;
         internal const double PanelWidth = 360.0;
-        internal const double PanelMaxHeight = 480.0;
+        internal const double PanelMaxHeight = 640.0;
         internal const double PanelCornerRadius = 10.0;
         internal const double PanelShadowMargin = 8.0;
 

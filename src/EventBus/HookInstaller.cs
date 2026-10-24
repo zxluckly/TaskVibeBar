@@ -17,6 +17,7 @@ namespace VibeBar
     {
         private const string CliFileName = "VibeBar.Cli.exe";
         private const string HookArgument = "--hook";
+        private const string StatusLineArgument = "--statusline";
         private const int HookTimeoutSeconds = 5;
 
         private static readonly string[] HookEvents = new string[]
@@ -82,6 +83,73 @@ namespace VibeBar
         /// <summary>
         /// 检查目标文件中是否已有 VibeBar 的 Hook 条目。读取/解析失败返回 false。
         /// </summary>
+        internal static string OriginalStatusLinePath
+        {
+            get
+            {
+                string folder = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "VibeBar");
+                return Path.Combine(folder, "statusline-original.txt");
+            }
+        }
+
+        internal bool IsStatusLineInstalled()
+        {
+            if (!CanUseSettingsPath() || !File.Exists(_settingsPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                Dictionary<string, object> root = LoadRootQuiet();
+                if (root == null)
+                {
+                    return false;
+                }
+
+                object value;
+                if (!root.TryGetValue("statusLine", out value) || value == null)
+                {
+                    return false;
+                }
+
+                Dictionary<string, object> statusLine =
+                    value as Dictionary<string, object>;
+                if (statusLine == null)
+                {
+                    return false;
+                }
+
+                object commandValue;
+                string command = statusLine.TryGetValue("command", out commandValue)
+                    ? commandValue as string
+                    : null;
+                return command != null
+                    && command.IndexOf(CliFileName, StringComparison.OrdinalIgnoreCase) >= 0
+                    && command.IndexOf(StatusLineArgument, StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch (Exception exception)
+            {
+                Log.Debug("检查 statusLine 安装状态失败：" + exception.GetType().Name);
+                return false;
+            }
+        }
+
+        private Dictionary<string, object> LoadRootQuiet()
+        {
+            try
+            {
+                string text = File.ReadAllText(_settingsPath, Encoding.UTF8);
+                return Json.Deserialize<Dictionary<string, object>>(text);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         internal bool IsInstalled()
         {
             if (!CanUseSettingsPath())
@@ -198,6 +266,12 @@ namespace VibeBar
                 entries.Add(CreateHookEntry());
             }
 
+            error = InstallStatusLine(root);
+            if (error != null)
+            {
+                return error;
+            }
+
             string json;
             if (!TrySerializeValidated(root, out json, out error))
             {
@@ -249,8 +323,9 @@ namespace VibeBar
                 return error;
             }
 
-            bool removed = RemoveVibeBarEntries(hooks, true);
-            if (!removed)
+            bool removedHooks = RemoveVibeBarEntries(hooks, true);
+            bool removedStatusLine = UninstallStatusLine(root);
+            if (!removedHooks && !removedStatusLine)
             {
                 return null;
             }
@@ -456,6 +531,126 @@ namespace VibeBar
             entry["matcher"] = string.Empty;
             entry["hooks"] = new object[] { command };
             return entry;
+        }
+
+        private string InstallStatusLine(Dictionary<string, object> root)
+        {
+            string existingCommand = null;
+            object value;
+            if (root.TryGetValue("statusLine", out value) && value != null)
+            {
+                Dictionary<string, object> existing =
+                    value as Dictionary<string, object>;
+                if (existing != null)
+                {
+                    object commandValue;
+                    existingCommand = existing.TryGetValue("command", out commandValue)
+                        ? commandValue as string
+                        : null;
+                }
+            }
+
+            bool existingIsOurs = existingCommand != null
+                && existingCommand.IndexOf(
+                    CliFileName,
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+
+            if (!existingIsOurs && !string.IsNullOrEmpty(existingCommand))
+            {
+                try
+                {
+                    string folder = Path.GetDirectoryName(OriginalStatusLinePath);
+                    if (!string.IsNullOrEmpty(folder))
+                    {
+                        Directory.CreateDirectory(folder);
+                    }
+
+                    File.WriteAllText(
+                        OriginalStatusLinePath,
+                        existingCommand,
+                        new UTF8Encoding(false));
+                }
+                catch (Exception exception)
+                {
+                    Log.Write("保存原 statusLine 失败：" + exception.GetType().Name);
+                    return "保存原 statusLine 失败，未做任何修改";
+                }
+            }
+
+            root["statusLine"] = CreateStatusLineEntry();
+            return null;
+        }
+
+        private bool UninstallStatusLine(Dictionary<string, object> root)
+        {
+            object value;
+            if (!root.TryGetValue("statusLine", out value) || value == null)
+            {
+                return false;
+            }
+
+            Dictionary<string, object> existing =
+                value as Dictionary<string, object>;
+            object commandValue;
+            string command = existing == null
+                ? null
+                : (existing.TryGetValue("command", out commandValue)
+                    ? commandValue as string
+                    : null);
+
+            if (command == null
+                || command.IndexOf(CliFileName, StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return false;
+            }
+
+            string original = ReadOriginalStatusLine();
+            if (!string.IsNullOrEmpty(original))
+            {
+                Dictionary<string, object> restored =
+                    new Dictionary<string, object>();
+                restored["type"] = "command";
+                restored["command"] = original;
+                root["statusLine"] = restored;
+                TryDelete(OriginalStatusLinePath);
+            }
+            else
+            {
+                root.Remove("statusLine");
+                TryDelete(OriginalStatusLinePath);
+            }
+
+            return true;
+        }
+
+        private Dictionary<string, object> CreateStatusLineEntry()
+        {
+            string command = _cliPath.IndexOf(' ') >= 0
+                ? "\"" + _cliPath + "\" " + StatusLineArgument
+                : _cliPath + " " + StatusLineArgument;
+
+            Dictionary<string, object> entry = new Dictionary<string, object>();
+            entry["type"] = "command";
+            entry["command"] = command;
+            return entry;
+        }
+
+        private static string ReadOriginalStatusLine()
+        {
+            try
+            {
+                if (!File.Exists(OriginalStatusLinePath))
+                {
+                    return null;
+                }
+
+                string text = File.ReadAllText(OriginalStatusLinePath, Encoding.UTF8);
+                return string.IsNullOrEmpty(text) ? null : text.Trim();
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static bool TrySerializeValidated(
