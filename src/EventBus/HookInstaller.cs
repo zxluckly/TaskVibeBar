@@ -632,6 +632,8 @@ namespace VibeBar
             Dictionary<string, object> entry = new Dictionary<string, object>();
             entry["type"] = "command";
             entry["command"] = command;
+            // 即使 Claude Code 不主动刷新，也每 5 秒重跑一次，保证上下文及时更新。
+            entry["refreshInterval"] = 5;
             return entry;
         }
 

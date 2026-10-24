@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -120,11 +121,24 @@ namespace VibeBar
                         state.ProjectName = CwdProjectName(cwd);
                     }
 
+                    string transcriptPath = GetString(payload, "transcript_path");
+                    if (!string.IsNullOrEmpty(transcriptPath))
+                    {
+                        state.TranscriptPath = transcriptPath;
+                    }
+
                     state.StaleMinutes = _staleMinutes;
                     state.LastEventUtc = now;
                     // 新事件到达即解除过期标记；下一次 Tick 会按新时间重算。
                     state.IsStale = false;
                     ApplyEvent(state, eventName, payload);
+
+                    // statusLine 未提供上下文时，从会话转录兜底读取模型/上下文。
+                    if (TryRefreshTranscriptContext(state, now))
+                    {
+                        changed = true;
+                    }
+
                     changed = true;
                 }
             }
@@ -242,11 +256,13 @@ namespace VibeBar
                     if (Math.Abs(rounded - previous) >= 0.5)
                     {
                         state.ContextUsedPercent = value;
+                        state.ContextFromStatusLine = true;
                         meaningfulChange = true;
                     }
                     else if (!state.ContextUsedPercent.HasValue)
                     {
                         state.ContextUsedPercent = value;
+                        state.ContextFromStatusLine = true;
                         meaningfulChange = true;
                     }
                 }
@@ -568,6 +584,166 @@ namespace VibeBar
             }
         }
 
+        private static bool TryRefreshTranscriptContext(
+            SessionState state,
+            DateTime now)
+        {
+            if (state == null
+                || state.ContextFromStatusLine
+                || string.IsNullOrEmpty(state.TranscriptPath))
+            {
+                return false;
+            }
+
+            if (state.LastTranscriptReadUtc != default(DateTime)
+                && (now - state.LastTranscriptReadUtc).TotalSeconds < 2)
+            {
+                return false;
+            }
+
+            state.LastTranscriptReadUtc = now;
+
+            try
+            {
+                using (FileStream stream = new FileStream(
+                    state.TranscriptPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete))
+                {
+                    long length = stream.Length;
+                    int take = (int)Math.Min(length, 512L * 1024L);
+                    if (take <= 0)
+                    {
+                        return false;
+                    }
+
+                    stream.Seek(-take, SeekOrigin.End);
+                    byte[] buffer = new byte[take];
+                    int read = 0;
+                    while (read < take)
+                    {
+                        int count = stream.Read(buffer, read, take - read);
+                        if (count <= 0)
+                        {
+                            break;
+                        }
+
+                        read += count;
+                    }
+
+                    string text = Encoding.UTF8.GetString(buffer, 0, read);
+                    string[] lines = text.Split('\n');
+                    for (int index = lines.Length - 1; index >= 0; index--)
+                    {
+                        string line = lines[index].Trim();
+                        if (line.Length == 0)
+                        {
+                            continue;
+                        }
+
+                        // 文件末尾可能正在写入半行，跳过它。
+                        if (index == 0 && take < length)
+                        {
+                            continue;
+                        }
+
+                        Dictionary<string, object> entry;
+                        try
+                        {
+                            entry = Json.Deserialize<Dictionary<string, object>>(line);
+                        }
+                        catch
+                        {
+                            continue;
+                        }
+
+                        if (entry == null
+                            || !string.Equals(
+                                GetString(entry, "type"),
+                                "assistant",
+                                StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+
+                        Dictionary<string, object> message = GetObject(entry, "message");
+                        if (message == null)
+                        {
+                            continue;
+                        }
+
+                        Dictionary<string, object> usage = GetObject(message, "usage");
+                        if (usage == null)
+                        {
+                            continue;
+                        }
+
+                        string model = GetString(message, "model");
+                        if (string.IsNullOrEmpty(model))
+                        {
+                            model = GetString(entry, "requestedModel");
+                        }
+
+                        double input = GetDouble(usage, "input_tokens") ?? 0;
+                        double cacheRead = GetDouble(usage, "cache_read_input_tokens") ?? 0;
+                        double cacheCreate = GetDouble(usage, "cache_creation_input_tokens") ?? 0;
+                        double tokens = input + cacheRead + cacheCreate;
+                        if (tokens <= 0)
+                        {
+                            continue;
+                        }
+
+                        double window = ContextWindowFor(model);
+                        double percent = Math.Min(100.0, tokens / window * 100.0);
+
+                        bool changed = false;
+                        if (!string.IsNullOrEmpty(model)
+                            && !string.Equals(state.Model, model, StringComparison.Ordinal))
+                        {
+                            state.Model = model;
+                            changed = true;
+                        }
+
+                        double rounded = Math.Round(percent);
+                        double previous = state.ContextUsedPercent.HasValue
+                            ? Math.Round(state.ContextUsedPercent.Value)
+                            : -1;
+                        if (Math.Abs(rounded - previous) >= 0.5)
+                        {
+                            state.ContextUsedPercent = percent;
+                            changed = true;
+                        }
+
+                        return changed;
+                    }
+                }
+            }
+            catch
+            {
+                // 转录文件可能被占用/格式变化；失败时静默，等待 statusLine 或下次事件。
+            }
+
+            return false;
+        }
+
+        private static double ContextWindowFor(string model)
+        {
+            string name = model == null ? string.Empty : model.ToLowerInvariant();
+            if (name.IndexOf("1m", StringComparison.Ordinal) >= 0
+                || name.IndexOf("deepseek-v4", StringComparison.Ordinal) >= 0)
+            {
+                return 1000000.0;
+            }
+
+            if (name.IndexOf("200k", StringComparison.Ordinal) >= 0)
+            {
+                return 200000.0;
+            }
+
+            return 200000.0;
+        }
+
         private static string GetString(Dictionary<string, object> payload, string key)
         {
             object value;
@@ -719,6 +895,9 @@ namespace VibeBar
             internal bool IsStale;
             internal string Model;
             internal double? ContextUsedPercent;
+            internal bool ContextFromStatusLine;
+            internal string TranscriptPath;
+            internal DateTime LastTranscriptReadUtc;
         }
     }
 }
