@@ -25,3 +25,7 @@ WPF任务栏嵌入.md
 功能设计.md
 架构与接口.md
 验收与测试.md
+
+# 文档仅本地保留，仓库只保留 README.md
+*.md
+!README.md
