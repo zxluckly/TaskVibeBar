@@ -73,6 +73,8 @@ bin\VibeBar.Cli.exe
 
 打开数据目录：托盘右键 →「打开数据目录」。
 
+`settings.json` 改完自动生效：保存后约 1 秒内热重载，无需重启；写入非法内容时保留上一次的有效配置（详见 `log.txt`）。设置窗口打开期间不热重载。
+
 `settings.json` 主要字段：
 
 ```json

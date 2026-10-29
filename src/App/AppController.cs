@@ -75,6 +75,11 @@ namespace VibeBar
 
             CreateUi();
             CreateProviders();
+
+            // 外部改 settings.json 后热重载：后台线程解析，UI 线程应用。
+            _settingsStore.Reloaded += OnSettingsReloaded;
+            _settingsStore.StartWatching();
+
             StartClock();
 
             Log.Write("VibeBar 启动，任务栏显示=" + _settings.General.ShowTaskbar);
@@ -1250,6 +1255,52 @@ namespace VibeBar
             }
         }
 
+        /// <summary>
+        /// SettingsStore 的热重载回调（后台线程）。切回 UI 线程后再替换设置对象。
+        /// </summary>
+        private void OnSettingsReloaded(AppSettings settings)
+        {
+            if (_exiting || settings == null)
+            {
+                return;
+            }
+
+            try
+            {
+                _dispatcher.BeginInvoke(
+                    DispatcherPriority.Normal,
+                    new Action(delegate
+                    {
+                        ApplyReloadedSettings(settings);
+                    }));
+            }
+            catch (InvalidOperationException)
+            {
+                // 应用正在退出，消息循环已不可用。
+            }
+        }
+
+        private void ApplyReloadedSettings(AppSettings settings)
+        {
+            if (_exiting || settings == null)
+            {
+                return;
+            }
+
+            if (_settingsWindow != null)
+            {
+                // 设置窗口保存时用它持有的旧对象，热重载会让两边互相覆盖。
+                Log.Debug("设置窗口打开中，跳过热重载");
+                return;
+            }
+
+            _settings = settings;
+            ApplySettingsChange();
+
+            // 真正应用完成后才报"已热重载"：SettingsStore 只负责解析。
+            Log.Write("设置已热重载");
+        }
+
         private void OnSettingsSaved(object sender, EventArgs e)
         {
             if (_exiting)
@@ -1516,6 +1567,10 @@ namespace VibeBar
             }
 
             _exiting = true;
+
+            // 先停监听再退订，避免退出阶段仍有后台线程回调进来。
+            _settingsStore.StopWatching();
+            _settingsStore.Reloaded -= OnSettingsReloaded;
 
             if (_clockTimer != null)
             {

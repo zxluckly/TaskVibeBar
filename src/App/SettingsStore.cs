@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading;
 
 namespace VibeBar
 {
@@ -410,9 +411,26 @@ namespace VibeBar
     /// </summary>
     internal sealed class SettingsStore
     {
+        // 防抖窗口与自身保存抑制窗口（毫秒）。文件事件只重置定时器，
+        // 真正解析在定时器回调里做，连续保存只会应用最后一份。
+        private const int DebounceMilliseconds = 300;
+        private const int SelfSaveSuppressMilliseconds = 500;
+
         private readonly object _sync = new object();
         private readonly string _filePath;
         private Dictionary<string, object> _root;
+
+        private FileSystemWatcher _fileWatcher;
+        private Timer _debounceTimer;
+        private bool _watching;
+        private DateTime _suppressUntilUtc = DateTime.MinValue;
+        private DateTime _lastHandledWriteUtc = DateTime.MinValue;
+
+        /// <summary>
+        /// 热重载完成时触发。回调在后台线程执行，参数是新解析出的设置对象；
+        /// 订阅方自行切回 UI 线程。
+        /// </summary>
+        internal event Action<AppSettings> Reloaded;
 
         internal SettingsStore()
         {
@@ -426,6 +444,362 @@ namespace VibeBar
         internal string FilePath
         {
             get { return _filePath; }
+        }
+
+        /// <summary>
+        /// 开始监听 settings.json 的热重载。幂等：重复调用不会创建第二个 watcher。
+        /// 监听的是目录而不是文件——Save 用 File.Replace 落盘，只监听文件会漏事件。
+        /// 创建失败（无权限/目录不存在）只记日志，不影响启动。
+        /// </summary>
+        internal void StartWatching()
+        {
+            lock (_sync)
+            {
+                if (_watching)
+                {
+                    return;
+                }
+
+                _watching = true;
+            }
+
+            FileSystemWatcher watcher = null;
+            Timer timer = null;
+            try
+            {
+                string folder = Path.GetDirectoryName(_filePath);
+                watcher = new FileSystemWatcher(folder, "settings.json");
+                watcher.NotifyFilter = NotifyFilters.LastWrite
+                    | NotifyFilters.Size
+                    | NotifyFilters.CreationTime
+                    | NotifyFilters.FileName;
+                watcher.Changed += OnWatchedFileChanged;
+                watcher.Created += OnWatchedFileChanged;
+                watcher.Renamed += OnWatchedFileRenamed;
+
+                // 先建定时器再开监听，避免事件先于定时器到达。
+                timer = new Timer(
+                    OnDebounceElapsed,
+                    null,
+                    Timeout.Infinite,
+                    Timeout.Infinite);
+
+                lock (_sync)
+                {
+                    _fileWatcher = watcher;
+                    _debounceTimer = timer;
+                }
+
+                watcher.EnableRaisingEvents = true;
+                Log.Write("设置热重载已启用：" + folder);
+            }
+            catch (Exception exception)
+            {
+                lock (_sync)
+                {
+                    _fileWatcher = null;
+                    _debounceTimer = null;
+                    _watching = false;
+                }
+
+                DisposeQuietly(watcher, timer);
+                Log.Write("设置热重载启用失败，已忽略：" + exception.GetType().Name);
+            }
+        }
+
+        /// <summary>
+        /// 停止监听并释放 watcher/timer。幂等：未启动或重复调用都安全。
+        /// </summary>
+        internal void StopWatching()
+        {
+            FileSystemWatcher watcher;
+            Timer timer;
+            lock (_sync)
+            {
+                watcher = _fileWatcher;
+                timer = _debounceTimer;
+                _fileWatcher = null;
+                _debounceTimer = null;
+                _watching = false;
+            }
+
+            if (watcher != null)
+            {
+                try
+                {
+                    watcher.EnableRaisingEvents = false;
+                    watcher.Changed -= OnWatchedFileChanged;
+                    watcher.Created -= OnWatchedFileChanged;
+                    watcher.Renamed -= OnWatchedFileRenamed;
+                }
+                catch (Exception exception)
+                {
+                    Log.Write("停止设置监听失败：" + exception.GetType().Name);
+                }
+            }
+
+            DisposeQuietly(watcher, timer);
+        }
+
+        private static void DisposeQuietly(FileSystemWatcher watcher, Timer timer)
+        {
+            if (watcher != null)
+            {
+                try
+                {
+                    watcher.Dispose();
+                }
+                catch
+                {
+                    // 退出阶段重复释放忽略。
+                }
+            }
+
+            if (timer != null)
+            {
+                try
+                {
+                    timer.Dispose();
+                }
+                catch
+                {
+                    // 退出阶段重复释放忽略。
+                }
+            }
+        }
+
+        private void OnWatchedFileChanged(object sender, FileSystemEventArgs e)
+        {
+            RestartDebounce();
+        }
+
+        private void OnWatchedFileRenamed(object sender, RenamedEventArgs e)
+        {
+            RestartDebounce();
+        }
+
+        private void RestartDebounce()
+        {
+            Timer timer;
+            lock (_sync)
+            {
+                timer = _debounceTimer;
+            }
+
+            if (timer == null)
+            {
+                return;
+            }
+
+            try
+            {
+                timer.Change(DebounceMilliseconds, Timeout.Infinite);
+            }
+            catch (ObjectDisposedException)
+            {
+                // 退出过程中 watcher/timer 已被释放。
+            }
+        }
+
+        private void OnDebounceElapsed(object state)
+        {
+            try
+            {
+                bool watching;
+                lock (_sync)
+                {
+                    watching = _watching;
+                }
+
+                if (!watching)
+                {
+                    return;
+                }
+
+                DateTime lastWriteUtc = DateTime.MinValue;
+                try
+                {
+                    lastWriteUtc = File.GetLastWriteTimeUtc(_filePath);
+                }
+                catch (Exception)
+                {
+                    lastWriteUtc = DateTime.MinValue;
+                }
+
+                if (!ShouldReload(lastWriteUtc))
+                {
+                    return;
+                }
+
+                ReloadFromDisk();
+            }
+            catch (Exception exception)
+            {
+                Log.Write("设置热重载失败：" + exception.GetType().Name);
+            }
+        }
+
+        /// <summary>
+        /// 判定本次文件事件是否应触发重载：自身保存抑制窗口内、或同一份写入
+        /// （LastWriteTime 相同）已处理过，都跳过。
+        /// </summary>
+        internal bool ShouldReload(DateTime lastWriteUtc)
+        {
+            return ShouldReloadAt(DateTime.UtcNow, lastWriteUtc);
+        }
+
+        /// <summary>ShouldReload 的可测版本，nowUtc 由调用方给定。</summary>
+        internal bool ShouldReloadAt(DateTime nowUtc, DateTime lastWriteUtc)
+        {
+            lock (_sync)
+            {
+                if (nowUtc < _suppressUntilUtc)
+                {
+                    return false;
+                }
+
+                if (lastWriteUtc != DateTime.MinValue)
+                {
+                    if (lastWriteUtc == _lastHandledWriteUtc)
+                    {
+                        return false;
+                    }
+
+                    _lastHandledWriteUtc = lastWriteUtc;
+                }
+
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Save() 落盘后调用：记录自身写入的时间戳并开启 500ms 抑制窗口，
+        /// 避免 File.Replace 触发的监听事件把刚保存的配置再重载一遍。
+        /// </summary>
+        internal void MarkSelfSave()
+        {
+            // 任何异常都不能抛给 Save() 调用方（设置窗口会把它当成保存失败弹窗）；
+            // 标记失败最坏结果只是多热重载一次。
+            try
+            {
+                DateTime lastWriteUtc = File.GetLastWriteTimeUtc(_filePath);
+                lock (_sync)
+                {
+                    _suppressUntilUtc = DateTime.UtcNow.AddMilliseconds(
+                        SelfSaveSuppressMilliseconds);
+                    if (lastWriteUtc != DateTime.MinValue)
+                    {
+                        _lastHandledWriteUtc = lastWriteUtc;
+                    }
+                }
+            }
+            catch (Exception exception)
+            {
+                Log.Debug("记录自身保存时间失败：" + exception.GetType().Name);
+            }
+        }
+
+        private void ReloadFromDisk()
+        {
+            string text;
+            try
+            {
+                if (!File.Exists(_filePath))
+                {
+                    Log.Write("设置解析失败，保留原配置：文件不存在");
+                    return;
+                }
+
+                text = File.ReadAllText(_filePath, Encoding.UTF8);
+            }
+            catch (Exception exception)
+            {
+                Log.Write("设置解析失败，保留原配置：" + exception.GetType().Name);
+                return;
+            }
+
+            Dictionary<string, object> root;
+            string error;
+            AppSettings settings = ParseSettings(text, out root, out error);
+            if (error != null)
+            {
+                Log.Write("设置解析失败，保留原配置：" + error);
+                return;
+            }
+
+            lock (_sync)
+            {
+                _root = root;
+            }
+
+            // 这里只代表"文件解析成功"，是否真正生效由 AppController 决定后打日志。
+            Log.Write("设置文件已重新解析，等待应用");
+
+            // 不在锁内触发回调：UI 线程回调里可能再次 Save()。
+            Action<AppSettings> handler = Reloaded;
+            if (handler == null)
+            {
+                return;
+            }
+
+            try
+            {
+                handler(settings);
+            }
+            catch (Exception exception)
+            {
+                Log.Write("设置热重载回调失败：" + exception.GetType().Name);
+            }
+        }
+
+        /// <summary>
+        /// 解析 settings.json 文本。失败时不抛异常：返回默认值对象并由 error 给出原因，
+        /// 调用方必须丢弃该对象、保留旧配置（绝不能把默认值应用上去）。
+        /// </summary>
+        internal static AppSettings ParseSettings(
+            string text,
+            out Dictionary<string, object> root,
+            out string error)
+        {
+            root = null;
+            error = null;
+
+            if (string.IsNullOrEmpty(text) || text.Trim().Length == 0)
+            {
+                error = "空内容";
+                return new AppSettings();
+            }
+
+            Dictionary<string, object> parsed;
+            try
+            {
+                parsed = Json.Deserialize<Dictionary<string, object>>(text);
+            }
+            catch (Exception exception)
+            {
+                error = exception.GetType().Name;
+                return new AppSettings();
+            }
+
+            if (parsed == null)
+            {
+                error = "根对象无效";
+                return new AppSettings();
+            }
+
+            AppSettings settings = new AppSettings();
+            try
+            {
+                Apply(settings, parsed);
+            }
+            catch (Exception exception)
+            {
+                error = exception.GetType().Name;
+                return new AppSettings();
+            }
+
+            root = parsed;
+            return settings;
         }
 
         internal AppSettings Load()
@@ -562,6 +936,9 @@ namespace VibeBar
                 string text = Json.Serialize(_root);
                 WriteAtomic(text);
             }
+
+            // 自身保存抑制：写在锁外，且只影响监听事件，不改动配置内容。
+            MarkSelfSave();
         }
 
         private static void Apply(AppSettings settings, Dictionary<string, object> root)

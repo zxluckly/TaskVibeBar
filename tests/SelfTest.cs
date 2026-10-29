@@ -22,6 +22,8 @@ namespace VibeBar
             Console.WriteLine("VibeBar 自测开始");
 
             TestSettingsNormalize();
+            TestSettingsReloadParse();
+            TestSettingsReloadDebounce();
             TestPortVisual();
             TestPortScanner();
             TestPortProviderLive();
@@ -120,6 +122,103 @@ namespace VibeBar
                 "必选段默认开启",
                 segmentUi.IsSegmentEnabled("quota"),
                 "quota 被默认关闭");
+        }
+
+        /// <summary>
+        /// 热重载解析：非法 JSON 不能抛异常、不能返回"看起来可用"的对象；
+        /// 合法 JSON 要保留未知键，自定义命令仍按 NormalizeCustomCommands 收敛。
+        /// </summary>
+        private static void TestSettingsReloadParse()
+        {
+            Dictionary<string, object> root;
+            string error;
+
+            AppSettings broken = SettingsStore.ParseSettings(
+                "{ \"ports\": { \"watchPorts\": [ }",
+                out root,
+                out error);
+            Check(
+                "非法 JSON 解析不抛异常且返回默认值",
+                broken != null
+                    && broken.Ports.WatchPorts != null
+                    && broken.Ports.WatchPorts.Length == 9
+                    && root == null,
+                root == null ? "默认值不符" : "root 非空");
+            Check(
+                "非法 JSON 给出失败原因",
+                !string.IsNullOrEmpty(error),
+                "error=null");
+
+            AppSettings blank = SettingsStore.ParseSettings("   ", out root, out error);
+            Check(
+                "空文本解析失败且返回默认值",
+                blank != null && error != null && root == null,
+                "error=null 或 root 非空");
+
+            const string valid =
+                "{\"ports\":{\"watchPorts\":[]},\"myUnknownKey\":42,"
+                + "\"custom\":{\"commands\":["
+                + "{\"id\":\"dup\",\"command\":\"echo 1\"},"
+                + "{\"id\":\"dup\",\"command\":\"echo 2\"},"
+                + "{\"id\":\"empty\",\"command\":\"   \"}]}}";
+
+            AppSettings reloaded = SettingsStore.ParseSettings(valid, out root, out error);
+            Check(
+                "合法 JSON 解析成功",
+                error == null && reloaded != null,
+                error == null ? "reloaded=null" : error);
+            Check(
+                "热重载后 watchPorts 为空",
+                reloaded.Ports.WatchPorts != null
+                    && reloaded.Ports.WatchPorts.Length == 0,
+                reloaded.Ports.WatchPorts == null
+                    ? "null"
+                    : reloaded.Ports.WatchPorts.Length.ToString());
+            Check(
+                "热重载保留未知键",
+                root != null && root.ContainsKey("myUnknownKey"),
+                "root 丢失 myUnknownKey");
+            Check(
+                "热重载后自定义命令仍收敛",
+                reloaded.Custom.Commands.Count == 2
+                    && reloaded.Custom.Commands[0].Id != reloaded.Custom.Commands[1].Id,
+                reloaded.Custom.Commands.Count.ToString());
+        }
+
+        /// <summary>
+        /// 防抖判定：自身保存抑制窗口内跳过、同一份写入不重复处理、
+        /// 新写入恢复重载。全部用显式时间点断言，不依赖真实等待。
+        /// </summary>
+        private static void TestSettingsReloadDebounce()
+        {
+            SettingsStore store = new SettingsStore();
+            DateTime now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            DateTime firstWrite = now.AddSeconds(-1);
+
+            Check("首个文件事件应重载", store.ShouldReloadAt(now, firstWrite), "false");
+            Check(
+                "同一写入时间戳不重复重载",
+                !store.ShouldReloadAt(now.AddMilliseconds(10), firstWrite),
+                "true");
+
+            DateTime secondWrite = now.AddSeconds(-2);
+            Check(
+                "新的写入时间戳应重载",
+                store.ShouldReloadAt(now.AddMilliseconds(20), secondWrite),
+                "false");
+
+            store.MarkSelfSave();
+            DateTime afterSave = DateTime.UtcNow;
+            Check(
+                "自身保存后 500ms 内跳过",
+                !store.ShouldReloadAt(afterSave, afterSave.AddMilliseconds(-300)),
+                "true");
+            Check(
+                "抑制窗口结束后恢复重载",
+                store.ShouldReloadAt(
+                    afterSave.AddMilliseconds(600),
+                    afterSave.AddMilliseconds(-200)),
+                "false");
         }
 
         private static void TestPortVisual()
