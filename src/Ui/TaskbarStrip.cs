@@ -665,6 +665,11 @@ namespace VibeBar
             label.TextTrimming = TextTrimming.CharacterEllipsis;
             Typography.SetNumeralAlignment(label, FontNumeralAlignment.Tabular);
 
+            // 颜色必须在创建时按当前主题设置：Rebuild 会重建所有 TextBlock，
+            // 若只依赖 ApplyTheme 上色，主题切换后的下一次重建（Provider 结果
+            // 强制刷新）会把文字打回默认黑色，深色模式下就变成黑字黑底。
+            label.Foreground = new SolidColorBrush(UiTheme.RoleColor(visual.Role));
+
             if (visual.Pulse)
             {
                 StartPulse(label);
