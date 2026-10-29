@@ -14,6 +14,12 @@ namespace VibeBar
         int DefaultPriority { get; }
 
         /// <summary>
+        /// 是否出现在设置窗口的「显示模块」逐项开关里。外部段由
+        /// external.enabled 总开关控制，返回 false 即不进 ui.segments。
+        /// </summary>
+        bool ShowInSettings { get; }
+
+        /// <summary>
         /// 新增段首次进入 ui.segments 时的默认显隐。P1 可选段（端口、PR）默认关闭。
         /// </summary>
         bool DefaultEnabled { get; }
@@ -58,9 +64,15 @@ namespace VibeBar
             get { return _displayName; }
         }
 
-        public int DefaultPriority
+        // 外部段按推送的 priority 动态排序，因此允许子类覆盖。
+        public virtual int DefaultPriority
         {
             get { return _defaultPriority; }
+        }
+
+        public virtual bool ShowInSettings
+        {
+            get { return true; }
         }
 
         public virtual bool DefaultEnabled

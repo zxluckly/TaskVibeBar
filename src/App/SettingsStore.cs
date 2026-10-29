@@ -17,6 +17,7 @@ namespace VibeBar
         public PortsSettings Ports = new PortsSettings();
         public PrSettings Pr = new PrSettings();
         public CustomSettings Custom = new CustomSettings();
+        public ExternalSettings External = new ExternalSettings();
         public UiSettings Ui = new UiSettings();
         public HookSettings Hooks = new HookSettings();
     }
@@ -117,6 +118,48 @@ namespace VibeBar
     internal sealed class CustomSettings
     {
         public List<CustomCommandSettings> Commands = new List<CustomCommandSettings>();
+    }
+
+    /// <summary>
+    /// 外部段（插件协议 v1）配置。外部段不出现在 ui.segments 里，
+    /// 统一由 enabled 总开关控制；maxSegments 夹到 1..32，
+    /// defaultTtlSeconds 夹到 5..3600。
+    /// </summary>
+    internal sealed class ExternalSettings
+    {
+        public bool Enabled = true;
+        public int MaxSegments = 16;
+        public int DefaultTtlSeconds = 30;
+
+        internal static int NormalizeMaxSegments(int value)
+        {
+            if (value < 1)
+            {
+                return 1;
+            }
+
+            if (value > 32)
+            {
+                return 32;
+            }
+
+            return value;
+        }
+
+        internal static int NormalizeTtlSeconds(int value)
+        {
+            if (value < SegmentProtocol.MinTtlSeconds)
+            {
+                return SegmentProtocol.MinTtlSeconds;
+            }
+
+            if (value > SegmentProtocol.MaxTtlSeconds)
+            {
+                return SegmentProtocol.MaxTtlSeconds;
+            }
+
+            return value;
+        }
     }
 
     internal sealed class SegmentSetting
@@ -914,6 +957,15 @@ namespace VibeBar
                     custom,
                     settings.Custom.Commands);
 
+                settings.External.MaxSegments =
+                    ExternalSettings.NormalizeMaxSegments(settings.External.MaxSegments);
+                settings.External.DefaultTtlSeconds =
+                    ExternalSettings.NormalizeTtlSeconds(settings.External.DefaultTtlSeconds);
+                Dictionary<string, object> external = EnsureObject(_root, "external");
+                external["enabled"] = settings.External.Enabled;
+                external["maxSegments"] = settings.External.MaxSegments;
+                external["defaultTtlSeconds"] = settings.External.DefaultTtlSeconds;
+
                 UiSettings.Normalize(settings.Ui);
                 Dictionary<string, object> ui = EnsureObject(_root, "ui");
                 ui["maxWidth"] = settings.Ui.MaxWidth;
@@ -1021,6 +1073,17 @@ namespace VibeBar
             if (custom != null)
             {
                 ApplyCustomCommands(settings.Custom, custom);
+            }
+
+            Dictionary<string, object> external = GetObject(root, "external");
+            if (external != null)
+            {
+                settings.External.Enabled = GetBool(external, "enabled", true);
+                settings.External.MaxSegments = ExternalSettings.NormalizeMaxSegments(
+                    GetInt(external, "maxSegments", 16));
+                settings.External.DefaultTtlSeconds =
+                    ExternalSettings.NormalizeTtlSeconds(
+                        GetInt(external, "defaultTtlSeconds", 30));
             }
 
             Dictionary<string, object> ui = GetObject(root, "ui");

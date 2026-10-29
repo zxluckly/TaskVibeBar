@@ -31,6 +31,8 @@ namespace VibeBar
             TestPrVisual();
             TestCustomOutput();
             TestCustomCommandRun();
+            TestSegmentProtocol();
+            TestExternalSegment();
 
             Console.WriteLine();
             Console.WriteLine(
@@ -447,6 +449,422 @@ namespace VibeBar
             {
                 slowProvider.Dispose();
             }
+        }
+
+        // ------------------------------------------------------------------
+        // 外部段协议（T15）
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// 帧解析：合法帧字段/detail/默认值，非法帧错误码，文本净化，
+        /// color 白名单，ttl / priority 夹取。
+        /// </summary>
+        private static void TestSegmentProtocol()
+        {
+            ExternalSegmentFrame frame;
+            string error;
+
+            const string valid =
+                "{\"v\":1,\"op\":\"set\",\"id\":\"napcat.qq\",\"label\":\"QQ\","
+                + "\"text\":\"3 条未读\",\"tooltip\":\"2 群 + 1 私聊\","
+                + "\"color\":\"accent\",\"url\":\"https://example/pr/1\","
+                + "\"priority\":85,\"ttl\":120,"
+                + "\"detail\":[\"群 A：2 条\",\"私聊 B：1 条\"],"
+                + "\"unknownField\":\"ignored\"}";
+
+            bool ok = SegmentProtocol.TryParse(valid, 30, out frame, out error);
+            Check("外部帧解析成功", ok && error == null, error);
+            Check(
+                "外部帧字段齐全",
+                frame != null
+                    && frame.Op == "set"
+                    && frame.Id == "napcat.qq"
+                    && frame.Label == "QQ"
+                    && frame.Text == "3 条未读"
+                    && frame.Tooltip == "2 群 + 1 私聊"
+                    && frame.Url == "https://example/pr/1",
+                frame == null ? "null" : frame.Id);
+            Check(
+                "外部帧 detail 解析",
+                frame != null
+                    && frame.Detail != null
+                    && frame.Detail.Length == 2
+                    && frame.Detail[0] == "群 A：2 条"
+                    && frame.Detail[1] == "私聊 B：1 条",
+                frame == null || frame.Detail == null
+                    ? "null"
+                    : frame.Detail.Length.ToString(CultureInfo.InvariantCulture));
+            Check(
+                "外部帧 color 白名单命中",
+                frame != null && frame.Role == ColorRole.Accent,
+                frame == null ? "null" : frame.Role.ToString());
+            Check(
+                "外部帧 priority / ttl 生效",
+                frame != null && frame.Priority == 85 && frame.TtlSeconds == 120,
+                frame == null
+                    ? "null"
+                    : frame.Priority.ToString(CultureInfo.InvariantCulture)
+                        + "/"
+                        + frame.TtlSeconds.ToString(CultureInfo.InvariantCulture));
+
+            ok = SegmentProtocol.TryParse(
+                "{\"v\":1,\"op\":\"set\",\"id\":\"demo\",\"text\":\"ok\"}",
+                30,
+                out frame,
+                out error);
+            Check(
+                "外部帧默认 priority / ttl",
+                ok && frame.Priority == SegmentProtocol.DefaultPriority
+                    && frame.TtlSeconds == 30,
+                frame == null
+                    ? "null"
+                    : frame.Priority.ToString(CultureInfo.InvariantCulture)
+                        + "/"
+                        + frame.TtlSeconds.ToString(CultureInfo.InvariantCulture));
+
+            Check(
+                "坏 JSON → invalid_json",
+                ParseError("not-a-json") == SegmentProtocol.ErrorInvalidJson,
+                ParseError("not-a-json"));
+            Check(
+                "缺 text → missing_text",
+                ParseError("{\"v\":1,\"op\":\"set\",\"id\":\"demo\"}")
+                    == SegmentProtocol.ErrorMissingText,
+                ParseError("{\"v\":1,\"op\":\"set\",\"id\":\"demo\"}"));
+            Check(
+                "坏 id → invalid_id",
+                ParseError("{\"v\":1,\"op\":\"set\",\"id\":\"Demo\",\"text\":\"x\"}")
+                    == SegmentProtocol.ErrorInvalidId,
+                ParseError("{\"v\":1,\"op\":\"set\",\"id\":\"Demo\",\"text\":\"x\"}"));
+            Check(
+                "错版本 → unsupported_version",
+                ParseError("{\"v\":2,\"op\":\"set\",\"id\":\"demo\",\"text\":\"x\"}")
+                    == SegmentProtocol.ErrorUnsupportedVersion,
+                ParseError("{\"v\":2,\"op\":\"set\",\"id\":\"demo\",\"text\":\"x\"}"));
+            Check(
+                "错 op → invalid_op",
+                ParseError("{\"v\":1,\"op\":\"drop\",\"id\":\"demo\",\"text\":\"x\"}")
+                    == SegmentProtocol.ErrorInvalidOp,
+                ParseError("{\"v\":1,\"op\":\"drop\",\"id\":\"demo\",\"text\":\"x\"}"));
+
+            ok = SegmentProtocol.TryParse(
+                "{\"v\":1,\"op\":\"set\",\"id\":\"demo\",\"text\":\"a\\u0007b\\r\\nc\"}",
+                30,
+                out frame,
+                out error);
+            Check(
+                "文本净化控制字符与换行折叠",
+                ok && frame.Text == "ab c",
+                frame == null ? "null" : frame.Text);
+
+            string longText = new string('x', 40);
+            ok = SegmentProtocol.TryParse(
+                "{\"v\":1,\"op\":\"set\",\"id\":\"demo\",\"text\":\"" + longText + "\"}",
+                30,
+                out frame,
+                out error);
+            Check(
+                "超长文本截断并补 …",
+                ok
+                    && frame.Text.Length == SegmentProtocol.MaxTextLength + 1
+                    && frame.Text.EndsWith("…", StringComparison.Ordinal),
+                frame == null ? "null" : frame.Text.Length.ToString(CultureInfo.InvariantCulture));
+
+            ok = SegmentProtocol.TryParse(
+                "{\"v\":1,\"op\":\"set\",\"id\":\"demo\",\"text\":\"x\",\"color\":\"#FF0000\"}",
+                30,
+                out frame,
+                out error);
+            Check(
+                "color 白名单外回退 neutral",
+                ok && frame.Role == ColorRole.Neutral,
+                frame == null ? "null" : frame.Role.ToString());
+
+            ok = SegmentProtocol.TryParse(
+                "{\"v\":1,\"op\":\"set\",\"id\":\"demo\",\"text\":\"x\",\"ttl\":3}",
+                30,
+                out frame,
+                out error);
+            Check(
+                "ttl 下限夹取 3 → 5",
+                ok && frame.TtlSeconds == 5,
+                frame == null ? "null" : frame.TtlSeconds.ToString(CultureInfo.InvariantCulture));
+
+            ok = SegmentProtocol.TryParse(
+                "{\"v\":1,\"op\":\"set\",\"id\":\"demo\",\"text\":\"x\",\"ttl\":9999}",
+                30,
+                out frame,
+                out error);
+            Check(
+                "ttl 上限夹取 9999 → 3600",
+                ok && frame.TtlSeconds == 3600,
+                frame == null ? "null" : frame.TtlSeconds.ToString(CultureInfo.InvariantCulture));
+
+            ok = SegmentProtocol.TryParse(
+                "{\"v\":1,\"op\":\"set\",\"id\":\"demo\",\"text\":\"x\",\"priority\":5000}",
+                30,
+                out frame,
+                out error);
+            Check(
+                "priority 上限夹取",
+                ok && frame.Priority == 1000,
+                frame == null ? "null" : frame.Priority.ToString(CultureInfo.InvariantCulture));
+
+            ok = SegmentProtocol.TryParse(
+                "{\"v\":1,\"op\":\"remove\",\"id\":\"demo.a\"}",
+                30,
+                out frame,
+                out error);
+            Check(
+                "remove 帧只需 id",
+                ok && frame.Op == "remove" && frame.Id == "demo.a",
+                error == null ? "op/id 不符" : error);
+
+            ok = SegmentProtocol.TryParse(
+                "{\"v\":1,\"op\":\"set\",\"id\":\"demo\",\"text\":\"\"}",
+                30,
+                out frame,
+                out error);
+            Check(
+                "空 text 是合法帧（隐藏语义）",
+                ok && frame.Text.Length == 0,
+                error == null ? "text 非空" : error);
+        }
+
+        /// <summary>
+        /// 外部段 Presenter / 工厂 / clear 前缀 / 配置夹取。
+        /// </summary>
+        private static void TestExternalSegment()
+        {
+            ExternalSegmentState state = new ExternalSegmentState();
+            state.Id = "demo.build";
+            state.Label = "构建";
+            state.Text = "通过 12s";
+            state.Tooltip = "CI 通过";
+            state.Url = "https://example/build";
+            state.Priority = 88;
+            state.Role = ColorRole.Success;
+            state.Detail = new string[] { "步骤：build", "耗时：12s" };
+            state.ExpiresUtc = new DateTime(2026, 1, 1, 0, 0, 10, DateTimeKind.Utc);
+            state.UpdatedUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+            FakeActionHost host = new FakeActionHost();
+            ExternalSegmentPresenter presenter = new ExternalSegmentPresenter(state, host);
+            Check(
+                "外部段 Id 加 ext: 前缀",
+                presenter.Id == "ext:demo.build",
+                presenter.Id);
+            Check(
+                "外部段 DisplayName 用 label",
+                presenter.DisplayName == "构建",
+                presenter.DisplayName);
+            Check(
+                "外部段不进设置窗口",
+                !presenter.ShowInSettings,
+                "ShowInSettings=true");
+            Check(
+                "外部段优先级跟随推送",
+                presenter.DefaultPriority == 88,
+                presenter.DefaultPriority.ToString(CultureInfo.InvariantCulture));
+
+            SegmentVisual visual = presenter.BuildVisual(false);
+            Check(
+                "外部段文本 label + text",
+                visual != null
+                    && visual.Kind == SegmentKind.External
+                    && visual.Text == "构建 通过 12s",
+                visual == null ? "null" : visual.Text);
+            Check(
+                "外部段颜色跟随推送",
+                visual != null && visual.Role == ColorRole.Success,
+                visual == null ? "null" : visual.Role.ToString());
+
+            DetailSection detail = presenter.BuildDetail(false);
+            Check(
+                "外部段详情用 detail 行",
+                detail != null
+                    && detail.Title == "构建"
+                    && detail.Lines != null
+                    && detail.Lines.Length == 2
+                    && detail.Lines[0] == "步骤：build",
+                detail == null || detail.Lines == null
+                    ? "null"
+                    : Join(detail.Lines));
+
+            Check(
+                "外部段面板动作：打开链接 + 复制文本",
+                detail != null
+                    && detail.Actions != null
+                    && detail.Actions.Length == 2
+                    && detail.Actions[0].Label == "打开链接"
+                    && detail.Actions[1].Label == "复制文本",
+                detail == null || detail.Actions == null
+                    ? "null"
+                    : detail.Actions.Length.ToString(CultureInfo.InvariantCulture));
+
+            if (detail != null
+                && detail.Actions != null
+                && detail.Actions.Length == 2
+                && detail.Actions[0].Handler != null
+                && detail.Actions[1].Handler != null)
+            {
+                detail.Actions[0].Handler();
+                detail.Actions[1].Handler();
+            }
+
+            Check(
+                "外部段面板动作可执行",
+                host.OpenedUrl == "https://example/build"
+                    && host.CopiedText == "通过 12s",
+                (host.OpenedUrl == null ? "null" : host.OpenedUrl)
+                    + "/"
+                    + (host.CopiedText == null ? "null" : host.CopiedText));
+
+            Check(
+                "外部段未到期",
+                !presenter.IsExpired(new DateTime(2026, 1, 1, 0, 0, 9, DateTimeKind.Utc)),
+                "true");
+            Check(
+                "外部段到期边界（等于 now 即过期）",
+                presenter.IsExpired(new DateTime(2026, 1, 1, 0, 0, 10, DateTimeKind.Utc)),
+                "false");
+
+            ExternalSegmentState hidden = new ExternalSegmentState();
+            hidden.Id = "demo.hide";
+            hidden.Text = string.Empty;
+            ExternalSegmentPresenter hiddenPresenter =
+                new ExternalSegmentPresenter(hidden, null);
+            Check(
+                "空 text 隐藏该段",
+                hiddenPresenter.BuildVisual(false) == null,
+                "返回了非 null");
+            Check(
+                "空 text 仍保留 id",
+                hiddenPresenter.Id == "ext:demo.hide",
+                hiddenPresenter.Id);
+
+            AppSettings settings = new AppSettings();
+            settings.External.Enabled = false;
+            Check(
+                "总开关关闭时不启用外部段",
+                !presenter.IsEnabled(settings),
+                "true");
+
+            settings.External.Enabled = true;
+            settings.Ui.SetSegmentEnabled("ext:demo.build", false);
+            Check(
+                "外部段不受 ui.segments 影响",
+                presenter.IsEnabled(settings),
+                "false");
+
+            SegmentRegistry registry = new SegmentRegistry();
+            registry.Register(presenter);
+            registry.Register(new CustomCommandSegmentPresenter(
+                "cmd1",
+                "命令",
+                "echo 1",
+                string.Empty,
+                60,
+                null));
+            IList<SegmentDescriptor> descriptors = registry.GetDescriptors();
+            Check(
+                "外部段不出现在设置描述符里",
+                descriptors.Count == 1 && descriptors[0].Id == "cmd1",
+                descriptors.Count.ToString(CultureInfo.InvariantCulture));
+
+            Check(
+                "clear 命中 id 本身",
+                SegmentProtocol.MatchesClearPrefix("demo", "demo"),
+                "false");
+            Check(
+                "clear 命中 id. 子段",
+                SegmentProtocol.MatchesClearPrefix("demo.a", "demo")
+                    && SegmentProtocol.MatchesClearPrefix("demo.b", "demo"),
+                "false");
+            Check(
+                "clear 不误伤 demox",
+                !SegmentProtocol.MatchesClearPrefix("demox", "demo"),
+                "true");
+
+            Check(
+                "external.maxSegments 下限 1",
+                ExternalSettings.NormalizeMaxSegments(0) == 1,
+                ExternalSettings.NormalizeMaxSegments(0).ToString(CultureInfo.InvariantCulture));
+            Check(
+                "external.maxSegments 上限 32",
+                ExternalSettings.NormalizeMaxSegments(99) == 32,
+                ExternalSettings.NormalizeMaxSegments(99).ToString(CultureInfo.InvariantCulture));
+            Check(
+                "external.defaultTtlSeconds 下限 5",
+                ExternalSettings.NormalizeTtlSeconds(3) == 5,
+                ExternalSettings.NormalizeTtlSeconds(3).ToString(CultureInfo.InvariantCulture));
+            Check(
+                "external.defaultTtlSeconds 上限 3600",
+                ExternalSettings.NormalizeTtlSeconds(9999) == 3600,
+                ExternalSettings.NormalizeTtlSeconds(9999).ToString(CultureInfo.InvariantCulture));
+
+            Dictionary<string, object> root;
+            string error;
+            AppSettings parsed = SettingsStore.ParseSettings(
+                "{\"external\":{\"enabled\":false,\"maxSegments\":99},\"myUnknownKey\":1}",
+                out root,
+                out error);
+            Check(
+                "external 配置读取并夹取",
+                error == null
+                    && !parsed.External.Enabled
+                    && parsed.External.MaxSegments == 32
+                    && parsed.External.DefaultTtlSeconds == 30,
+                error == null
+                    ? parsed.External.MaxSegments.ToString(CultureInfo.InvariantCulture)
+                    : error);
+            Check(
+                "external 缺失时默认开启",
+                new AppSettings().External.Enabled,
+                "Enabled=false");
+        }
+
+        /// <summary>
+        /// 记录面板动作的目标，供外部段 Presenter 断言使用。
+        /// </summary>
+        private sealed class FakeActionHost : ISegmentActionHost
+        {
+            internal string OpenedUrl;
+            internal string CopiedText;
+
+            public void RefreshProvider(string providerId)
+            {
+            }
+
+            public void OpenUrl(string url)
+            {
+                OpenedUrl = url;
+            }
+
+            public void OpenFolder(string path)
+            {
+            }
+
+            public void CopyText(string text)
+            {
+                CopiedText = text;
+            }
+
+            public void ShowSettings()
+            {
+            }
+        }
+
+        private static string ParseError(string line)
+        {
+            ExternalSegmentFrame frame;
+            string error;
+            if (SegmentProtocol.TryParse(line, 30, out frame, out error))
+            {
+                return "ok";
+            }
+
+            return error;
         }
 
         private static PortEntry CreatePort(int port, string processName)

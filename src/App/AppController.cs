@@ -42,6 +42,9 @@ namespace VibeBar
             new Dictionary<string, CustomCommandProvider>();
         private readonly Dictionary<string, CustomCommandSegmentPresenter> _customPresenters =
             new Dictionary<string, CustomCommandSegmentPresenter>();
+        private readonly Dictionary<string, ExternalSegmentPresenter> _externalPresenters =
+            new Dictionary<string, ExternalSegmentPresenter>();
+        private SegmentServer _externalServer;
         private DispatcherTimer _clockTimer;
         private SettingsWindow _settingsWindow;
         private string _visualSignature = string.Empty;
@@ -205,6 +208,9 @@ namespace VibeBar
                 _eventServer = new EventServer(_agentProvider);
                 _eventServer.Start();
             }
+
+            // 外部段管道与 Hook IPC 独立，按 external.enabled 启停。
+            StartExternalServer();
         }
 
         /// <summary>
@@ -376,6 +382,328 @@ namespace VibeBar
             }
 
             return false;
+        }
+
+        // ------------------------------------------------------------------
+        // 外部段（插件协议 v1）
+        // ------------------------------------------------------------------
+
+        private void StartExternalServer()
+        {
+            if (_exiting || _externalServer != null)
+            {
+                return;
+            }
+
+            if (_settings == null
+                || _settings.External == null
+                || !_settings.External.Enabled)
+            {
+                return;
+            }
+
+            SegmentServer server = new SegmentServer(
+                new Func<ExternalSegmentFrame, string>(HandleExternalFrame),
+                ExternalSettings.NormalizeTtlSeconds(
+                    _settings.External.DefaultTtlSeconds));
+            server.Start();
+            _externalServer = server;
+            Log.Write("外部段管道已启动：" + SegmentProtocol.PipeName);
+        }
+
+        /// <summary>
+        /// 停止监听。总开关关闭时连同已有外部段一起清掉，避免残留到 TTL；
+        /// 仅因 defaultTtlSeconds 变化而重启时保留已有段（各自有独立到期时间）。
+        /// </summary>
+        private void StopExternalServer(bool clearSegments)
+        {
+            if (_externalServer != null)
+            {
+                _externalServer.Dispose();
+                _externalServer = null;
+                Log.Write("外部段管道已停止");
+            }
+
+            if (clearSegments)
+            {
+                ClearAllExternalSegments();
+            }
+        }
+
+        private void ApplyExternalSettings()
+        {
+            if (_settings == null || _settings.External == null)
+            {
+                return;
+            }
+
+            if (!_settings.External.Enabled)
+            {
+                StopExternalServer(true);
+                return;
+            }
+
+            int ttl = ExternalSettings.NormalizeTtlSeconds(
+                _settings.External.DefaultTtlSeconds);
+            if (_externalServer != null && _externalServer.DefaultTtlSeconds != ttl)
+            {
+                // 缺省 ttl 只在构造时读取，变化后重启一次即可。
+                StopExternalServer(false);
+            }
+
+            StartExternalServer();
+        }
+
+        /// <summary>
+        /// 管道后台线程回调。所有段变更必须在 UI 线程，因此同步 Invoke 拿结果
+        /// （需要把 too_many_segments 这类错误回给客户端），阻塞的只是管道线程。
+        /// </summary>
+        private string HandleExternalFrame(ExternalSegmentFrame frame)
+        {
+            if (frame == null)
+            {
+                return SegmentProtocol.ErrorInvalidJson;
+            }
+
+            try
+            {
+                object result = _dispatcher.Invoke(
+                    new Func<string>(
+                        delegate { return ApplyExternalFrame(frame); }));
+                string reply = result as string;
+                return string.IsNullOrEmpty(reply) ? SegmentProtocol.OkReply : reply;
+            }
+            catch (Exception exception)
+            {
+                Log.Debug("外部段帧应用失败：" + exception.GetType().Name);
+                return SegmentProtocol.ErrorInvalidJson;
+            }
+        }
+
+        private string ApplyExternalFrame(ExternalSegmentFrame frame)
+        {
+            if (_exiting || _segments == null)
+            {
+                Log.Debug("退出中收到外部段帧，已丢弃");
+                return SegmentProtocol.ErrorInvalidJson;
+            }
+
+            if (string.Equals(frame.Op, SegmentProtocol.OpRemove, StringComparison.Ordinal))
+            {
+                RemoveExternalSegment(frame.Id);
+                return SegmentProtocol.OkReply;
+            }
+
+            if (string.Equals(frame.Op, SegmentProtocol.OpClear, StringComparison.Ordinal))
+            {
+                ClearExternalSegments(frame.Id);
+                return SegmentProtocol.OkReply;
+            }
+
+            ExternalSegmentState state = CreateExternalState(frame);
+            ExternalSegmentPresenter presenter;
+            if (_externalPresenters.TryGetValue(frame.Id, out presenter))
+            {
+                // DisplayName 在基类里只读，label 变化时重建实例最省事；
+                // 超上限只拒绝新 id，已存在的 id 更新不受影响。
+                if (!string.Equals(
+                    presenter.DisplayName,
+                    string.IsNullOrEmpty(state.Label) ? state.Id : state.Label,
+                    StringComparison.Ordinal))
+                {
+                    _segments.Unregister(presenter.Id);
+                    presenter = new ExternalSegmentPresenter(state, this);
+                    _externalPresenters[frame.Id] = presenter;
+                    _segments.Register(presenter);
+                }
+                else
+                {
+                    presenter.Update(state);
+                }
+            }
+            else
+            {
+                if (_externalPresenters.Count >= GetMaxExternalSegments())
+                {
+                    Log.Debug("外部段数量超过上限，已拒绝：" + frame.Id);
+                    return SegmentProtocol.ErrorTooManySegments;
+                }
+
+                presenter = new ExternalSegmentPresenter(state, this);
+                _externalPresenters[frame.Id] = presenter;
+                _segments.Register(presenter);
+            }
+
+            RefreshVisuals(true);
+            return SegmentProtocol.OkReply;
+        }
+
+        private static ExternalSegmentState CreateExternalState(
+            ExternalSegmentFrame frame)
+        {
+            DateTime nowUtc = DateTime.UtcNow;
+            ExternalSegmentState state = new ExternalSegmentState();
+            state.Id = frame.Id;
+            state.Label = frame.Label;
+            state.Text = frame.Text;
+            state.Tooltip = frame.Tooltip;
+            state.Role = frame.Role;
+            state.Url = frame.Url;
+            state.Priority = frame.Priority;
+            state.Detail = frame.Detail;
+            state.UpdatedUtc = nowUtc;
+            state.ExpiresUtc = nowUtc.AddSeconds(frame.TtlSeconds);
+            return state;
+        }
+
+        private void RemoveExternalSegment(string id)
+        {
+            if (string.IsNullOrEmpty(id) || _externalPresenters.Count == 0)
+            {
+                return;
+            }
+
+            ExternalSegmentPresenter presenter;
+            if (!_externalPresenters.TryGetValue(id, out presenter))
+            {
+                return;
+            }
+
+            _externalPresenters.Remove(id);
+            if (_segments != null)
+            {
+                _segments.Unregister(presenter.Id);
+            }
+
+            Log.Debug("外部段已移除：" + id);
+            RefreshVisuals(true);
+        }
+
+        /// <summary>
+        /// clear 的 id 是前缀：删除 id 本身 + 所有 "id." 开头的段。
+        /// </summary>
+        private void ClearExternalSegments(string idPrefix)
+        {
+            if (string.IsNullOrEmpty(idPrefix) || _externalPresenters.Count == 0)
+            {
+                return;
+            }
+
+            List<string> matched = new List<string>();
+            foreach (KeyValuePair<string, ExternalSegmentPresenter> pair
+                in _externalPresenters)
+            {
+                if (SegmentProtocol.MatchesClearPrefix(pair.Key, idPrefix))
+                {
+                    matched.Add(pair.Key);
+                }
+            }
+
+            if (matched.Count == 0)
+            {
+                return;
+            }
+
+            for (int index = 0; index < matched.Count; index++)
+            {
+                ExternalSegmentPresenter presenter;
+                if (_externalPresenters.TryGetValue(matched[index], out presenter))
+                {
+                    _externalPresenters.Remove(matched[index]);
+                    if (_segments != null)
+                    {
+                        _segments.Unregister(presenter.Id);
+                    }
+                }
+            }
+
+            Log.Debug(
+                "外部段已按前缀清理："
+                + idPrefix
+                + " × "
+                + matched.Count.ToString());
+            RefreshVisuals(true);
+        }
+
+        private void ClearAllExternalSegments()
+        {
+            if (_externalPresenters.Count == 0)
+            {
+                return;
+            }
+
+            foreach (KeyValuePair<string, ExternalSegmentPresenter> pair
+                in _externalPresenters)
+            {
+                if (_segments != null)
+                {
+                    _segments.Unregister(pair.Value.Id);
+                }
+            }
+
+            int count = _externalPresenters.Count;
+            _externalPresenters.Clear();
+            Log.Debug("外部段已全部清空：× " + count.ToString());
+            RefreshVisuals(true);
+        }
+
+        private int GetMaxExternalSegments()
+        {
+            int value = _settings == null || _settings.External == null
+                ? 16
+                : _settings.External.MaxSegments;
+            return ExternalSettings.NormalizeMaxSegments(value);
+        }
+
+        /// <summary>
+        /// 1 秒时钟里的 TTL 清扫：移除过期段，有变化才强制刷新。
+        /// </summary>
+        private void SweepExternalSegments()
+        {
+            if (_externalPresenters.Count == 0)
+            {
+                return;
+            }
+
+            DateTime nowUtc = DateTime.UtcNow;
+            List<string> expired = null;
+            foreach (KeyValuePair<string, ExternalSegmentPresenter> pair
+                in _externalPresenters)
+            {
+                if (!pair.Value.IsExpired(nowUtc))
+                {
+                    continue;
+                }
+
+                if (expired == null)
+                {
+                    expired = new List<string>();
+                }
+
+                expired.Add(pair.Key);
+            }
+
+            if (expired == null)
+            {
+                return;
+            }
+
+            for (int index = 0; index < expired.Count; index++)
+            {
+                ExternalSegmentPresenter presenter;
+                if (_externalPresenters.TryGetValue(expired[index], out presenter))
+                {
+                    _externalPresenters.Remove(expired[index]);
+                    if (_segments != null)
+                    {
+                        _segments.Unregister(presenter.Id);
+                    }
+                }
+
+                Log.Debug("外部段已过期：" + expired[index]);
+            }
+
+            RefreshVisuals(true);
         }
 
         private void OnAgentRefreshSuggested()
@@ -613,6 +941,8 @@ namespace VibeBar
                     Log.Write("推进 Agent 会话状态失败：" + exception.GetType().Name);
                 }
             }
+
+            SweepExternalSegments();
 
             RefreshVisuals(false);
 
@@ -1371,6 +1701,9 @@ namespace VibeBar
                 _segments.EnsureSettingDefaults(_settings);
             }
 
+            // 外部段管道按 external.enabled 启停（热重载同样走这里）。
+            ApplyExternalSettings();
+
             if (_tray != null)
             {
                 _tray.UpdatePrivacy(_settings.General.PrivacyMode);
@@ -1611,6 +1944,12 @@ namespace VibeBar
                 _eventServer = null;
             }
 
+            if (_externalServer != null)
+            {
+                _externalServer.Dispose();
+                _externalServer = null;
+            }
+
             if (_scheduler != null)
             {
                 _scheduler.ResultAvailable -= OnProviderResult;
@@ -1631,6 +1970,7 @@ namespace VibeBar
             _portPresenter = null;
             _prPresenter = null;
             _customPresenters.Clear();
+            _externalPresenters.Clear();
             _segments = null;
 
             Theme.Changed -= OnThemeChanged;

@@ -88,6 +88,14 @@ namespace VibeBar
             for (int index = 0; index < _presenters.Count; index++)
             {
                 ISegmentPresenter presenter = _presenters[index];
+
+                // 外部段等「不进设置窗口」的段不参与 ui.segments 默认项，
+                // 避免动态段把用户设置文件越写越大。
+                if (!presenter.ShowInSettings)
+                {
+                    continue;
+                }
+
                 descriptors.Add(new SegmentDescriptor(
                     presenter.Id,
                     presenter.DisplayName,

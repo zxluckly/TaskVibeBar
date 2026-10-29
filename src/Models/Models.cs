@@ -9,7 +9,8 @@ namespace VibeBar
         Agent = 2,
         Port = 3,
         Pr = 4,
-        Custom = 5
+        Custom = 5,
+        External = 6
     }
 
     internal enum SnapshotSource
@@ -177,5 +178,23 @@ namespace VibeBar
         public DateTime UpdatedUtc;
         public SnapshotHealth Health;
         public string Error;
+    }
+
+    /// <summary>
+    /// 一个外部段（插件协议 v1）的当前状态。内容全部来自命名管道推送，
+    /// 主程序不持有任何外部段的业务文案。ExpiresUtc 到期后由 1 秒时钟清扫。
+    /// </summary>
+    internal sealed class ExternalSegmentState
+    {
+        public string Id;
+        public string Label;
+        public string Text;
+        public string Tooltip;
+        public ColorRole Role;
+        public string Url;
+        public int Priority;
+        public string[] Detail;
+        public DateTime ExpiresUtc;
+        public DateTime UpdatedUtc;
     }
 }

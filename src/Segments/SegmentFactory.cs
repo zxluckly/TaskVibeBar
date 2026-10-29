@@ -1292,6 +1292,70 @@ namespace VibeBar
             return section;
         }
 
+        // ------------------------------------------------------------------
+        // 外部段（插件协议 v1）
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// 外部段视图：label + " " + text，颜色/优先级完全取自推送内容。
+        /// text 为空表示隐藏该段，返回 null。
+        /// </summary>
+        internal static SegmentVisual CreateExternal(
+            ExternalSegmentState state,
+            string displayName)
+        {
+            if (state == null || string.IsNullOrEmpty(state.Text))
+            {
+                return null;
+            }
+
+            SegmentVisual visual = new SegmentVisual();
+            visual.Kind = SegmentKind.External;
+            visual.Glyph = string.Empty;
+            visual.Pulse = false;
+            visual.Priority = state.Priority;
+            visual.Text = string.IsNullOrEmpty(state.Label)
+                ? state.Text
+                : state.Label + " " + state.Text;
+            visual.Role = state.Role;
+            visual.Tooltip = string.IsNullOrEmpty(state.Tooltip)
+                ? (string.IsNullOrEmpty(displayName) ? state.Id : displayName)
+                : state.Tooltip;
+            return visual;
+        }
+
+        internal static DetailSection CreateExternalDetail(
+            ExternalSegmentState state,
+            string displayName)
+        {
+            DetailSection section = new DetailSection();
+            section.Title = string.IsNullOrEmpty(displayName) ? "外部段" : displayName;
+            section.Actions = new DetailAction[0];
+
+            List<string> lines = new List<string>();
+            if (state != null && state.Detail != null)
+            {
+                for (int index = 0; index < state.Detail.Length; index++)
+                {
+                    string line = state.Detail[index];
+                    if (!string.IsNullOrEmpty(line))
+                    {
+                        lines.Add(line);
+                    }
+                }
+            }
+
+            if (lines.Count == 0)
+            {
+                lines.Add(state == null || string.IsNullOrEmpty(state.Text)
+                    ? "—"
+                    : state.Text);
+            }
+
+            section.Lines = lines.ToArray();
+            return section;
+        }
+
         internal static ColorRole ParseColorRole(string text)
         {
             if (string.IsNullOrEmpty(text))

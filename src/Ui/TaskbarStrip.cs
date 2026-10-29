@@ -12,7 +12,8 @@ namespace VibeBar
 {
     /// <summary>
     /// 任务栏内的透明胶囊条：只消费 SegmentVisual，不接触 Provider。
-    /// 宽度不足时按「Git → 非等待确认的会话 → 额度」折叠，额度为最低保留项。
+    /// 宽度不足时按「外部段 → Git → 非等待确认的会话 → PR → 端口 → 自定义」
+    /// 折叠，额度为最低保留项。
     /// </summary>
     internal sealed class TaskbarStrip : Border
     {
@@ -242,7 +243,8 @@ namespace VibeBar
 
         /// <summary>
         /// 纯计算：返回需要折叠的段数；-1 表示只保留额度仍放不下，应隐藏整条。
-        /// 折叠顺序固定为 Git、非等待确认的会话；额度不折叠（若仅额度也放不下则隐藏）。
+        /// 折叠顺序固定为外部段、Git、非等待确认的会话、PR、端口、自定义；
+        /// 额度不折叠（若仅额度也放不下则隐藏）。
         /// </summary>
         internal static int CalculateFoldCount(
             SegmentVisual[] visuals,
@@ -348,6 +350,16 @@ namespace VibeBar
         private static List<int> BuildFoldOrder(SegmentVisual[] visuals)
         {
             List<int> order = new List<int>();
+
+            // 外部段最先折叠：协议承诺「宽度不足时外部段比 Git、会话更早让位」。
+            for (int index = 0; index < visuals.Length; index++)
+            {
+                if (visuals[index] != null && visuals[index].Kind == SegmentKind.External)
+                {
+                    order.Add(index);
+                }
+            }
+
             for (int index = 0; index < visuals.Length; index++)
             {
                 if (visuals[index] != null && visuals[index].Kind == SegmentKind.Git)

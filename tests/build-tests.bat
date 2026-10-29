@@ -20,7 +20,7 @@ echo [TEST] Compiling tests\SelfTest.exe
  /r:System.dll /r:System.Core.dll /r:System.Web.Extensions.dll /r:System.Security.dll ^
  "%SRC%\Models\*.cs" "%SRC%\Providers\*.cs" "%SRC%\Segments\*.cs" "%SRC%\Segments\Presenters\*.cs" ^
  "%SRC%\App\Json.cs" "%SRC%\App\Log.cs" "%SRC%\App\NativeMethods.cs" "%SRC%\App\SettingsStore.cs" "%SRC%\App\Secrets.cs" ^
- "%SRC%\EventBus\EventProtocol.cs" "%ROOT%\tests\SelfTest.cs"
+ "%SRC%\EventBus\EventProtocol.cs" "%SRC%\EventBus\SegmentProtocol.cs" "%ROOT%\tests\SelfTest.cs"
 if errorlevel 1 goto :failed
 
 echo [TEST] Running
