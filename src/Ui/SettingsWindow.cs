@@ -29,6 +29,7 @@ namespace VibeBar
         private readonly CheckBox _claudeKeyBox;
 
         private readonly ComboBox _anchorBox;
+        private readonly ComboBox _monitorBox;
         private readonly TextBlock _offsetLabel;
         private readonly TextBox _offsetBox;
         private readonly TextBox _maxWidthBox;
@@ -134,6 +135,23 @@ namespace VibeBar
             {
                 UpdateOffsetLabel();
             };
+
+            _monitorBox = new ComboBox();
+            _monitorBox.Height = 30;
+            _monitorBox.Width = 180;
+            _monitorBox.HorizontalAlignment = HorizontalAlignment.Left;
+
+            ComboBoxItem primaryMonitor = new ComboBoxItem();
+            primaryMonitor.Content = "主屏任务栏";
+            primaryMonitor.Tag = "primary";
+            _monitorBox.Items.Add(primaryMonitor);
+
+            ComboBoxItem secondaryMonitor = new ComboBoxItem();
+            secondaryMonitor.Content = "副屏任务栏";
+            secondaryMonitor.Tag = "secondary";
+            _monitorBox.Items.Add(secondaryMonitor);
+
+            SelectMonitor(settings.Ui.Monitor);
 
             _offsetLabel = new TextBlock();
             _offsetLabel.Width = 150;
@@ -297,6 +315,7 @@ namespace VibeBar
 
             AddLabel(root, "任务栏显示区域");
             root.Children.Add(CreateInlineRow("吸附方式", _anchorBox));
+            root.Children.Add(CreateInlineRow("显示器", _monitorBox));
 
             StackPanel offsetRow = new StackPanel();
             offsetRow.Orientation = Orientation.Horizontal;
@@ -349,6 +368,27 @@ namespace VibeBar
             hoverOpacityRow.Children.Add(_hoverOpacityLabel);
             root.Children.Add(hoverOpacityRow);
             AddHint(root, "颜色留空或勾选「跟随系统主题色」时使用主题色；透明度 0% 表示悬停也不显示背景。");
+
+            AddLabel(root, "扩展段（端口 / PR / 自定义命令）");
+            AddHint(
+                root,
+                "端口段与 PR 段默认关闭，可在上方「显示模块」中开启。"
+                + "关注端口 ports.watchPorts、PR 刷新间隔 pr.pollSeconds、"
+                + "自定义命令 custom.commands 都在 settings.json 中配置；"
+                + "修改后需重启 VibeBar（不要在保存设置前手工改文件）。");
+            AddHint(
+                root,
+                "⚠ 自定义命令由你本人编写并在本机以 cmd 执行，效果等同于在命令行直接运行，"
+                + "请只填写可信命令；超时固定 3 秒，失败只影响该段。");
+
+            Button openConfigButton = new Button();
+            openConfigButton.Content = "打开 settings.json";
+            openConfigButton.Width = 150;
+            openConfigButton.Height = 28;
+            openConfigButton.HorizontalAlignment = HorizontalAlignment.Left;
+            openConfigButton.Margin = new Thickness(0, 8, 0, 0);
+            openConfigButton.Click += OnOpenSettingsFile;
+            root.Children.Add(openConfigButton);
 
             AddLabel(root, "峰谷规则（只读）");
             TextBlock rules = new TextBlock();
@@ -467,6 +507,38 @@ namespace VibeBar
             }
 
             return 60;
+        }
+
+        private void SelectMonitor(string monitor)
+        {
+            string target = string.Equals(
+                monitor,
+                "secondary",
+                StringComparison.OrdinalIgnoreCase)
+                ? "secondary"
+                : "primary";
+
+            for (int index = 0; index < _monitorBox.Items.Count; index++)
+            {
+                ComboBoxItem item = _monitorBox.Items[index] as ComboBoxItem;
+                if (item != null
+                    && string.Equals(item.Tag as string, target, StringComparison.Ordinal))
+                {
+                    _monitorBox.SelectedIndex = index;
+                    return;
+                }
+            }
+
+            _monitorBox.SelectedIndex = 0;
+        }
+
+        private string GetSelectedMonitor()
+        {
+            ComboBoxItem item = _monitorBox.SelectedItem as ComboBoxItem;
+            string monitor = item == null ? null : item.Tag as string;
+            return string.Equals(monitor, "secondary", StringComparison.Ordinal)
+                ? "secondary"
+                : "primary";
         }
 
         private void SelectAnchor(string anchor)
@@ -649,6 +721,30 @@ namespace VibeBar
                 {
                     _repoPathBox.Text = dialog.SelectedPath;
                 }
+            }
+        }
+
+        private void OnOpenSettingsFile(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // 首次运行可能还没有 settings.json，先写一次再打开。
+                if (!File.Exists(_settingsStore.FilePath))
+                {
+                    _settingsStore.Save(_settings);
+                }
+
+                Process.Start("notepad.exe", "\"" + _settingsStore.FilePath + "\"");
+            }
+            catch (Exception exception)
+            {
+                Log.Error("打开 settings.json 失败", exception);
+                MessageBox.Show(
+                    this,
+                    "无法打开 settings.json，可在数据目录中手工编辑。",
+                    "VibeBar",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
             }
         }
 
@@ -954,6 +1050,7 @@ namespace VibeBar
             }
 
             _settings.Ui.Anchor = GetSelectedAnchor();
+            _settings.Ui.Monitor = GetSelectedMonitor();
             _settings.Ui.OffsetX = offsetX;
             _settings.Ui.MaxWidth = maxWidth;
             for (int index = 0; index < _segmentChecks.Count; index++)

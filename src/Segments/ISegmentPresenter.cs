@@ -13,6 +13,11 @@ namespace VibeBar
         string DisplayName { get; }
         int DefaultPriority { get; }
 
+        /// <summary>
+        /// 新增段首次进入 ui.segments 时的默认显隐。P1 可选段（端口、PR）默认关闭。
+        /// </summary>
+        bool DefaultEnabled { get; }
+
         bool IsEnabled(AppSettings settings);
         SegmentVisual BuildVisual(bool privacy);
         DetailSection BuildDetail(bool privacy);
@@ -56,6 +61,11 @@ namespace VibeBar
         public int DefaultPriority
         {
             get { return _defaultPriority; }
+        }
+
+        public virtual bool DefaultEnabled
+        {
+            get { return true; }
         }
 
         public virtual bool IsEnabled(AppSettings settings)

@@ -1,4 +1,5 @@
 using System;
+using System.Text;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -23,6 +24,7 @@ namespace VibeBar
         private int _minWidth = 120;
         private int _offsetX = 8;
         private bool _anchorLeft;
+        private bool _secondaryMonitor;
 
         internal TaskbarHost(TaskbarStrip strip)
         {
@@ -133,6 +135,24 @@ namespace VibeBar
             if (_enabled && !_destroyed)
             {
                 UpdatePosition();
+            }
+        }
+
+        /// <summary>
+        /// 选择挂载到主屏任务栏（Shell_TrayWnd）还是副屏任务栏
+        /// （Shell_SecondaryTrayWnd）。副屏不存在时自动回退主屏。
+        /// </summary>
+        internal void SetMonitor(bool secondary)
+        {
+            if (_secondaryMonitor == secondary)
+            {
+                return;
+            }
+
+            _secondaryMonitor = secondary;
+            if (_enabled && !_destroyed)
+            {
+                AttachToTaskbar();
             }
         }
 
@@ -264,6 +284,18 @@ namespace VibeBar
                 _destroyed = true;
                 _taskbar = IntPtr.Zero;
             }
+            else if (message == NativeMethods.WM_DPICHANGED
+                || message == NativeMethods.WM_DISPLAYCHANGE)
+            {
+                // 跨屏拖动/缩放变更后，WPF 的 DPI 与任务栏矩形都会变，
+                // 延后一拍按新 DPI 重新测量并定位。
+                SchedulePosition();
+            }
+            else if (message == NativeMethods.WM_SETTINGCHANGE)
+            {
+                // 任务栏自动隐藏/位置变化会发 WM_SETTINGCHANGE。
+                SchedulePosition();
+            }
 
             return IntPtr.Zero;
         }
@@ -293,7 +325,7 @@ namespace VibeBar
                 return;
             }
 
-            IntPtr taskbar = NativeMethods.FindWindow("Shell_TrayWnd", null);
+            IntPtr taskbar = ResolveTaskbar();
             if (taskbar == IntPtr.Zero)
             {
                 return;
@@ -302,6 +334,56 @@ namespace VibeBar
             _taskbar = taskbar;
             EnsureAttached(handle, taskbar);
             UpdatePosition();
+        }
+
+        /// <summary>
+        /// 解析要挂载的任务栏窗口。副屏模式下优先 Shell_SecondaryTrayWnd，
+        /// 找不到（单屏/已断开）时回退主屏 Shell_TrayWnd。
+        /// </summary>
+        private IntPtr ResolveTaskbar()
+        {
+            if (_secondaryMonitor)
+            {
+                IntPtr secondary = FindSecondaryTaskbar();
+                if (secondary != IntPtr.Zero && NativeMethods.IsWindow(secondary))
+                {
+                    return secondary;
+                }
+            }
+
+            return NativeMethods.FindWindow(NativeMethods.TaskbarClassName, null);
+        }
+
+        private static IntPtr FindSecondaryTaskbar()
+        {
+            IntPtr found = IntPtr.Zero;
+            NativeMethods.EnumWindowsProc callback = delegate(IntPtr window, IntPtr state)
+            {
+                StringBuilder name = new StringBuilder(64);
+                NativeMethods.GetClassName(window, name, name.Capacity);
+                if (string.Equals(
+                    name.ToString(),
+                    NativeMethods.SecondaryTaskbarClassName,
+                    StringComparison.Ordinal)
+                    && NativeMethods.IsWindowVisible(window))
+                {
+                    found = window;
+                    return false;
+                }
+
+                return true;
+            };
+
+            try
+            {
+                NativeMethods.EnumWindows(callback, IntPtr.Zero);
+            }
+            catch (Exception exception)
+            {
+                Log.Debug("枚举副屏任务栏失败：" + exception.GetType().Name);
+            }
+
+            return found;
         }
 
         private void EnsureAttached(IntPtr handle, IntPtr taskbar)
@@ -330,7 +412,7 @@ namespace VibeBar
                 return;
             }
 
-            IntPtr taskbar = NativeMethods.FindWindow("Shell_TrayWnd", null);
+            IntPtr taskbar = ResolveTaskbar();
             if (taskbar == IntPtr.Zero || !NativeMethods.IsWindow(taskbar))
             {
                 return;
@@ -346,32 +428,47 @@ namespace VibeBar
                 return;
             }
 
-            IntPtr notify = NativeMethods.FindWindowEx(
-                taskbar,
-                IntPtr.Zero,
-                "TrayNotifyWnd",
-                null);
-
-            // 靠右：右缘从托盘左缘往左让出 offsetX；靠左：左缘从任务栏左缘往右让出 offsetX。
-            int trayGap = _anchorLeft ? 8 : _offsetX;
-            int rightEdge = taskbarRect.Right - 220;
-            if (notify != IntPtr.Zero)
-            {
-                NativeMethods.RECT notifyRect;
-                if (NativeMethods.GetWindowRect(notify, out notifyRect)
-                    && notifyRect.Left > taskbarRect.Left)
-                {
-                    rightEdge = notifyRect.Left - trayGap;
-                }
-            }
-
-            int leftLimit = taskbarRect.Left + (_anchorLeft ? _offsetX : 8);
-
             DpiScale dpi = VisualTreeHelper.GetDpi(this);
             double scaleX = dpi.DpiScaleX <= 0 ? 1.0 : dpi.DpiScaleX;
             double scaleY = dpi.DpiScaleY <= 0 ? 1.0 : dpi.DpiScaleY;
 
-            int availablePixels = rightEdge - leftLimit;
+            int taskbarWidth = taskbarRect.Right - taskbarRect.Left;
+            int taskbarHeight = taskbarRect.Bottom - taskbarRect.Top;
+            // 竖向任务栏（左侧/右侧）：可用长度是任务栏高度，条水平居中贴在底部。
+            bool vertical = taskbarHeight > taskbarWidth;
+
+            int leftLimit = taskbarRect.Left + 8;
+            int rightEdge = taskbarRect.Right - 8;
+            int availablePixels;
+            if (vertical)
+            {
+                availablePixels = taskbarWidth - 16;
+            }
+            else
+            {
+                IntPtr notify = NativeMethods.FindWindowEx(
+                    taskbar,
+                    IntPtr.Zero,
+                    "TrayNotifyWnd",
+                    null);
+
+                // 靠右：右缘从托盘左缘往左让出 offsetX；靠左：左缘从任务栏左缘往右让出 offsetX。
+                int trayGap = _anchorLeft ? 8 : _offsetX;
+                rightEdge = taskbarRect.Right - 220;
+                if (notify != IntPtr.Zero)
+                {
+                    NativeMethods.RECT notifyRect;
+                    if (NativeMethods.GetWindowRect(notify, out notifyRect)
+                        && notifyRect.Left > taskbarRect.Left)
+                    {
+                        rightEdge = notifyRect.Left - trayGap;
+                    }
+                }
+
+                leftLimit = taskbarRect.Left + (_anchorLeft ? _offsetX : 8);
+                availablePixels = rightEdge - leftLimit;
+            }
+
             if (availablePixels < 0)
             {
                 availablePixels = 0;
@@ -432,19 +529,38 @@ namespace VibeBar
                 return;
             }
 
-            int taskbarHeight = taskbarRect.Bottom - taskbarRect.Top;
-            int x = _anchorLeft ? leftLimit : rightEdge - width;
-            if (x < taskbarRect.Left + 8)
+            int x;
+            int y;
+            if (vertical)
             {
-                x = taskbarRect.Left + 8;
-            }
+                x = taskbarRect.Left + (taskbarWidth - width) / 2;
+                if (x < taskbarRect.Left + 4)
+                {
+                    x = taskbarRect.Left + 4;
+                }
 
-            if (x + width > rightEdge && rightEdge - width >= taskbarRect.Left + 8)
+                int bottomGap = _anchorLeft ? _offsetX : 8;
+                y = taskbarRect.Bottom - height - bottomGap;
+                if (y < taskbarRect.Top + 4)
+                {
+                    y = taskbarRect.Top + 4;
+                }
+            }
+            else
             {
-                x = rightEdge - width;
-            }
+                x = _anchorLeft ? leftLimit : rightEdge - width;
+                if (x < taskbarRect.Left + 8)
+                {
+                    x = taskbarRect.Left + 8;
+                }
 
-            int y = taskbarRect.Top + (taskbarHeight - height) / 2;
+                if (x + width > rightEdge && rightEdge - width >= taskbarRect.Left + 8)
+                {
+                    x = rightEdge - width;
+                }
+
+                y = taskbarRect.Top + (taskbarHeight - height) / 2;
+            }
 
             NativeMethods.POINT clientPoint = new NativeMethods.POINT();
             clientPoint.X = x;

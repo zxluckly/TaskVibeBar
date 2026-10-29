@@ -1,6 +1,5 @@
 using System;
-using System.ComponentModel;
-using System.Diagnostics;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -34,7 +33,6 @@ namespace VibeBar
         private string _gitDir;
         private FileSystemWatcher _watcher;
         private FileSystemWatcher _worktreeWatcher;
-        private Process _activeProcess;
         private bool _disposed;
 
         /// <summary>
@@ -155,7 +153,7 @@ namespace VibeBar
                 return CreateResult(CreateUnavailableSnapshot(repoPath, "仓库路径不存在"));
             }
 
-            GitRunResult run = await RunGitAsync(repoPath, includeUntracked, token)
+            ProcessRunResult run = await RunGitAsync(repoPath, includeUntracked, token)
                 .ConfigureAwait(false);
 
             if (run.Cancelled || token.IsCancellationRequested)
@@ -163,7 +161,7 @@ namespace VibeBar
                 throw new OperationCanceledException(token);
             }
 
-            if (run.GitNotFound)
+            if (run.NotFound)
             {
                 Log.Write("Git 查询失败：未找到 git");
                 return CreateResult(CreateUnavailableSnapshot(repoPath, "未找到 git"));
@@ -230,146 +228,26 @@ namespace VibeBar
             return CreateResult(snapshot);
         }
 
-        private async Task<GitRunResult> RunGitAsync(
+        private Task<ProcessRunResult> RunGitAsync(
             string repoPath,
             bool includeUntracked,
             CancellationToken token)
         {
-            GitRunResult result = new GitRunResult();
-
-            Process process = new Process();
-            ProcessStartInfo startInfo = new ProcessStartInfo();
-            startInfo.FileName = "git";
-            startInfo.Arguments = BuildArguments(repoPath, includeUntracked);
-            startInfo.UseShellExecute = false;
-            startInfo.CreateNoWindow = true;
-            startInfo.WindowStyle = ProcessWindowStyle.Hidden;
-            startInfo.RedirectStandardOutput = true;
-            startInfo.RedirectStandardError = true;
-            startInfo.StandardOutputEncoding = new UTF8Encoding(false);
-            startInfo.StandardErrorEncoding = new UTF8Encoding(false);
             // 禁止 git status 为刷新 stat 信息而写回 .git/index：
             // 否则 .git 的 FileSystemWatcher 会再次触发查询，形成自激循环。
-            startInfo.EnvironmentVariables["GIT_OPTIONAL_LOCKS"] = "0";
-            startInfo.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
-            startInfo.EnvironmentVariables["GIT_PAGER"] = "cat";
+            Dictionary<string, string> environment = new Dictionary<string, string>();
+            environment["GIT_OPTIONAL_LOCKS"] = "0";
+            environment["GIT_TERMINAL_PROMPT"] = "0";
+            environment["GIT_PAGER"] = "cat";
 
-            TaskCompletionSource<bool> exitSource = new TaskCompletionSource<bool>();
-            CancellationTokenRegistration registration = new CancellationTokenRegistration();
-            Task<string> stdoutTask = null;
-            Task<string> stderrTask = null;
-
-            try
-            {
-                process.StartInfo = startInfo;
-
-                try
-                {
-                    if (!process.Start())
-                    {
-                        result.GitNotFound = true;
-                        return result;
-                    }
-                }
-                catch (Win32Exception)
-                {
-                    result.GitNotFound = true;
-                    return result;
-                }
-                catch (InvalidOperationException)
-                {
-                    result.GitNotFound = true;
-                    return result;
-                }
-
-                AttachProcess(process);
-
-                process.EnableRaisingEvents = true;
-                process.Exited += delegate { exitSource.TrySetResult(true); };
-                if (process.HasExited)
-                {
-                    exitSource.TrySetResult(true);
-                }
-
-                stdoutTask = process.StandardOutput.ReadToEndAsync();
-                stderrTask = process.StandardError.ReadToEndAsync();
-
-                registration = token.Register(
-                    delegate
-                    {
-                        TryKill(process);
-                    });
-
-                Task completed = await Task.WhenAny(
-                    exitSource.Task,
-                    Task.Delay(CommandTimeoutMilliseconds)).ConfigureAwait(false);
-
-                if (completed != exitSource.Task)
-                {
-                    result.TimedOut = true;
-                    TryKill(process);
-                    try
-                    {
-                        process.WaitForExit(1000);
-                    }
-                    catch
-                    {
-                    }
-
-                    ObserveFault(stdoutTask);
-                    ObserveFault(stderrTask);
-                    return result;
-                }
-
-                if (token.IsCancellationRequested)
-                {
-                    result.Cancelled = true;
-                    TryKill(process);
-                    ObserveFault(stdoutTask);
-                    ObserveFault(stderrTask);
-                    return result;
-                }
-
-                try
-                {
-                    result.ExitCode = process.ExitCode;
-                }
-                catch (InvalidOperationException)
-                {
-                    result.ExitCode = -1;
-                }
-
-                Task allOutput = Task.WhenAll(stdoutTask, stderrTask);
-                await Task.WhenAny(
-                    allOutput,
-                    Task.Delay(1000)).ConfigureAwait(false);
-
-                if (allOutput.IsCompleted)
-                {
-                    result.Stdout = stdoutTask.Result;
-                    result.Stderr = stderrTask.Result;
-                }
-
-                return result;
-            }
-            catch (OperationCanceledException)
-            {
-                result.Cancelled = true;
-                TryKill(process);
-                throw;
-            }
-            finally
-            {
-                registration.Dispose();
-                DetachProcess(process);
-                try
-                {
-                    process.Dispose();
-                }
-                catch
-                {
-                }
-            }
+            return ProcessRunner.RunAsync(
+                "git",
+                BuildArguments(repoPath, includeUntracked),
+                null,
+                CommandTimeoutMilliseconds,
+                new UTF8Encoding(false),
+                environment,
+                token);
         }
 
         private static string BuildArguments(string repoPath, bool includeUntracked)
@@ -919,81 +797,6 @@ namespace VibeBar
             }
         }
 
-        private void AttachProcess(Process process)
-        {
-            bool kill = false;
-            lock (_sync)
-            {
-                if (_disposed)
-                {
-                    kill = true;
-                }
-                else
-                {
-                    _activeProcess = process;
-                }
-            }
-
-            if (kill)
-            {
-                TryKill(process);
-            }
-        }
-
-        private void DetachProcess(Process process)
-        {
-            lock (_sync)
-            {
-                if (_activeProcess == process)
-                {
-                    _activeProcess = null;
-                }
-            }
-        }
-
-        private static void TryKill(Process process)
-        {
-            if (process == null)
-            {
-                return;
-            }
-
-            try
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill();
-                }
-            }
-            catch (ObjectDisposedException)
-            {
-            }
-            catch (Win32Exception)
-            {
-            }
-            catch (InvalidOperationException)
-            {
-            }
-            catch (NotSupportedException)
-            {
-            }
-        }
-
-        private static void ObserveFault(Task task)
-        {
-            if (task == null)
-            {
-                return;
-            }
-
-            task.ContinueWith(
-                delegate(Task completed)
-                {
-                    Exception ignored = completed.Exception;
-                },
-                TaskContinuationOptions.OnlyOnFaulted);
-        }
-
         private static GitSnapshot CreateUnavailableSnapshot(string repoPath, string error)
         {
             return CreateSnapshot(repoPath, error, SnapshotHealth.Unavailable);
@@ -1037,7 +840,6 @@ namespace VibeBar
             FileSystemWatcher watcher;
             FileSystemWatcher worktreeWatcher;
             Timer timer;
-            Process process;
 
             lock (_sync)
             {
@@ -1053,8 +855,6 @@ namespace VibeBar
                 _worktreeWatcher = null;
                 timer = _debounceTimer;
                 _debounceTimer = null;
-                process = _activeProcess;
-                _activeProcess = null;
             }
 
             if (watcher != null)
@@ -1088,20 +888,7 @@ namespace VibeBar
                 }
             }
 
-            if (process != null)
-            {
-                TryKill(process);
-            }
         }
 
-        private sealed class GitRunResult
-        {
-            internal string Stdout = string.Empty;
-            internal string Stderr = string.Empty;
-            internal int ExitCode;
-            internal bool TimedOut;
-            internal bool GitNotFound;
-            internal bool Cancelled;
-        }
     }
 }

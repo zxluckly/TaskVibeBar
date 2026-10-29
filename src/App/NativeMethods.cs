@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace VibeBar
 {
@@ -70,6 +71,44 @@ namespace VibeBar
 
         [DllImport("user32.dll", SetLastError = true)]
         internal static extern bool DestroyIcon(IntPtr hIcon);
+
+        [DllImport("user32.dll")]
+        internal static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        internal static extern int GetClassName(
+            IntPtr hWnd,
+            StringBuilder lpClassName,
+            int nMaxCount);
+
+        /// <summary>
+        /// 枚举监听中的 TCP 端口（TCP_TABLE_OWNER_PID_LISTENER）。
+        /// 返回 ERROR_INSUFFICIENT_BUFFER 时调用方按 pdwSize 重新分配缓冲区。
+        /// </summary>
+        [DllImport("iphlpapi.dll", SetLastError = true)]
+        internal static extern uint GetExtendedTcpTable(
+            IntPtr pTcpTable,
+            ref int pdwSize,
+            bool bOrder,
+            int ulAf,
+            int tableClass,
+            uint reserved);
+
+        [DllImport("kernel32.dll")]
+        internal static extern int GetOEMCP();
+
+        internal delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        internal const int AF_INET = 2;
+        internal const int TCP_TABLE_OWNER_PID_LISTENER = 3;
+        internal const int ERROR_INSUFFICIENT_BUFFER = 122;
+
+        internal const int WM_SETTINGCHANGE = 0x001A;
+        internal const int WM_DPICHANGED = 0x02E0;
+        internal const int WM_DISPLAYCHANGE = 0x007E;
+
+        internal const string TaskbarClassName = "Shell_TrayWnd";
+        internal const string SecondaryTaskbarClassName = "Shell_SecondaryTrayWnd";
 
         internal const int GWL_STYLE = -16;
         internal const int GWL_EXSTYLE = -20;

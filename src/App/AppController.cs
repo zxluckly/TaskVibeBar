@@ -34,6 +34,14 @@ namespace VibeBar
         private QuotaSegmentPresenter _quotaPresenter;
         private GitSegmentPresenter _gitPresenter;
         private AgentSegmentPresenter _agentPresenter;
+        private PortSegmentPresenter _portPresenter;
+        private PrSegmentPresenter _prPresenter;
+        private PortProvider _portProvider;
+        private PrProvider _prProvider;
+        private readonly Dictionary<string, CustomCommandProvider> _customProviders =
+            new Dictionary<string, CustomCommandProvider>();
+        private readonly Dictionary<string, CustomCommandSegmentPresenter> _customPresenters =
+            new Dictionary<string, CustomCommandSegmentPresenter>();
         private DispatcherTimer _clockTimer;
         private SettingsWindow _settingsWindow;
         private string _visualSignature = string.Empty;
@@ -91,9 +99,14 @@ namespace VibeBar
             _quotaPresenter = new QuotaSegmentPresenter(this);
             _gitPresenter = new GitSegmentPresenter(this);
             _agentPresenter = new AgentSegmentPresenter();
+            _portPresenter = new PortSegmentPresenter(this);
+            _prPresenter = new PrSegmentPresenter(this);
             _segments.Register(_quotaPresenter);
             _segments.Register(_gitPresenter);
             _segments.Register(_agentPresenter);
+            _segments.Register(_portPresenter);
+            _segments.Register(_prPresenter);
+            SyncCustomSegments(false);
             _segments.EnsureSettingDefaults(_settings);
 
             _strip = new TaskbarStrip(BuildVisuals());
@@ -111,6 +124,7 @@ namespace VibeBar
             _host.SetWidthLimits(_settings.Ui.MaxWidth, _settings.Ui.MinWidth);
             _host.SetAnchor(_settings.Ui.IsLeftAnchor);
             _host.SetOffsetX(_settings.Ui.OffsetX);
+            _host.SetMonitor(_settings.Ui.IsSecondaryMonitor);
 
             _tray = new TrayController();
             _tray.ToggleVisibilityRequested += OnToggleVisibilityRequested;
@@ -157,6 +171,13 @@ namespace VibeBar
                 Log.Write("Claude 会话事件已禁用");
             }
 
+            _portProvider = new PortProvider(
+                _settings.Ports.WatchPorts,
+                _settings.Ports.PollSeconds);
+            _prProvider = new PrProvider(
+                _settings.Git.RepoPath,
+                _settings.Pr.PollSeconds);
+
             _scheduler = new ProviderScheduler();
             _scheduler.ResultAvailable += OnProviderResult;
             _scheduler.Register(_quotaProvider);
@@ -166,6 +187,12 @@ namespace VibeBar
                 _scheduler.Register(_agentProvider);
             }
 
+            _scheduler.Register(_portProvider);
+            _scheduler.Register(_prProvider);
+
+            // 自定义命令段的 Provider 依赖调度器，必须在 CreateUi 之后补注册。
+            SyncCustomSegments(true);
+
             _scheduler.Start();
 
             if (_agentProvider != null)
@@ -173,6 +200,177 @@ namespace VibeBar
                 _eventServer = new EventServer(_agentProvider);
                 _eventServer.Start();
             }
+        }
+
+        /// <summary>
+        /// 按 settings.custom.commands 同步自定义命令段：增删 Presenter，
+        /// 需要时同时增删 Provider。设置保存后调用即可热生效。
+        /// </summary>
+        private void SyncCustomSegments(bool includeProviders)
+        {
+            if (_segments == null)
+            {
+                return;
+            }
+
+            List<CustomCommandSettings> desired = GetEnabledCustomCommands();
+
+            List<string> stale = new List<string>();
+            foreach (KeyValuePair<string, CustomCommandSegmentPresenter> pair
+                in _customPresenters)
+            {
+                if (!ContainsCommand(desired, pair.Key))
+                {
+                    stale.Add(pair.Key);
+                }
+            }
+
+            for (int index = 0; index < stale.Count; index++)
+            {
+                string id = stale[index];
+                _segments.Unregister(id);
+                _customPresenters.Remove(id);
+                if (includeProviders)
+                {
+                    RemoveCustomProvider(id);
+                }
+            }
+
+            for (int index = 0; index < desired.Count; index++)
+            {
+                CustomCommandSettings command = desired[index];
+                CustomCommandSegmentPresenter presenter;
+                if (!_customPresenters.TryGetValue(command.Id, out presenter))
+                {
+                    presenter = new CustomCommandSegmentPresenter(
+                        command.Id,
+                        command.Label,
+                        command.Command,
+                        command.Url,
+                        60 + index,
+                        this);
+                    _segments.Register(presenter);
+                    _customPresenters[command.Id] = presenter;
+                }
+                else
+                {
+                    CustomCommandProvider existing;
+                    if (_customProviders.TryGetValue(command.Id, out existing))
+                    {
+                        bool changed = !string.Equals(
+                                existing.Command,
+                                command.Command,
+                                StringComparison.Ordinal)
+                            || !string.Equals(
+                                existing.Label,
+                                command.Label,
+                                StringComparison.Ordinal)
+                            || !string.Equals(
+                                existing.Url,
+                                command.Url,
+                                StringComparison.Ordinal);
+                        existing.UpdateSettings(command);
+
+                        if (changed)
+                        {
+                            // 段文案与命令都是只读字段，重建 Presenter 最简单可靠。
+                            _segments.Unregister(command.Id);
+                            _customPresenters.Remove(command.Id);
+                            presenter = new CustomCommandSegmentPresenter(
+                                command.Id,
+                                command.Label,
+                                command.Command,
+                                command.Url,
+                                60 + index,
+                                this);
+                            _segments.Register(presenter);
+                            _customPresenters[command.Id] = presenter;
+                        }
+                    }
+                }
+
+                if (includeProviders)
+                {
+                    EnsureCustomProvider(command);
+                }
+            }
+        }
+
+        private void EnsureCustomProvider(CustomCommandSettings command)
+        {
+            if (_scheduler == null || command == null)
+            {
+                return;
+            }
+
+            CustomCommandProvider provider;
+            if (_customProviders.TryGetValue(command.Id, out provider))
+            {
+                provider.UpdateSettings(command);
+                return;
+            }
+
+            provider = new CustomCommandProvider(command);
+            _customProviders[command.Id] = provider;
+            _scheduler.Register(provider);
+        }
+
+        private void RemoveCustomProvider(string segmentId)
+        {
+            CustomCommandProvider provider;
+            if (!_customProviders.TryGetValue(segmentId, out provider))
+            {
+                return;
+            }
+
+            _customProviders.Remove(segmentId);
+            if (_scheduler != null)
+            {
+                _scheduler.Unregister(provider.Id);
+            }
+            else
+            {
+                provider.Dispose();
+            }
+        }
+
+        private List<CustomCommandSettings> GetEnabledCustomCommands()
+        {
+            List<CustomCommandSettings> result = new List<CustomCommandSettings>();
+            if (_settings == null
+                || _settings.Custom == null
+                || _settings.Custom.Commands == null)
+            {
+                return result;
+            }
+
+            for (int index = 0; index < _settings.Custom.Commands.Count; index++)
+            {
+                CustomCommandSettings command = _settings.Custom.Commands[index];
+                if (command != null
+                    && command.Enabled
+                    && !string.IsNullOrEmpty(command.Command))
+                {
+                    result.Add(command);
+                }
+            }
+
+            return result;
+        }
+
+        private static bool ContainsCommand(
+            List<CustomCommandSettings> commands,
+            string id)
+        {
+            for (int index = 0; index < commands.Count; index++)
+            {
+                if (string.Equals(commands[index].Id, id, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private void OnAgentRefreshSuggested()
@@ -590,7 +788,115 @@ namespace VibeBar
             {
                 ApplyAgentResult(result);
                 RefreshVisuals(true);
+                return;
             }
+
+            if (string.Equals(
+                result.ProviderId,
+                PortProvider.ProviderIdValue,
+                StringComparison.Ordinal))
+            {
+                ApplyPortResult(result);
+                RefreshVisuals(true);
+                return;
+            }
+
+            if (string.Equals(
+                result.ProviderId,
+                PrProvider.ProviderIdValue,
+                StringComparison.Ordinal))
+            {
+                ApplyPrResult(result);
+                RefreshVisuals(true);
+                return;
+            }
+
+            if (result.ProviderId != null
+                && result.ProviderId.StartsWith(
+                    CustomCommandProvider.ProviderIdPrefix,
+                    StringComparison.Ordinal))
+            {
+                ApplyCustomResult(result);
+                RefreshVisuals(true);
+            }
+        }
+
+        private void ApplyPortResult(ProviderResult result)
+        {
+            if (_portPresenter == null)
+            {
+                return;
+            }
+
+            PortSnapshot snapshot = result.Snapshot as PortSnapshot;
+            if (snapshot == null)
+            {
+                snapshot = new PortSnapshot();
+                snapshot.Ports = new PortEntry[0];
+                snapshot.Health = result.Health == SnapshotHealth.Live
+                    ? SnapshotHealth.Error
+                    : result.Health;
+                snapshot.Error = string.IsNullOrEmpty(result.Error)
+                    ? "端口探测失败"
+                    : result.Error;
+                snapshot.UpdatedUtc = result.UpdatedUtc;
+            }
+
+            _portPresenter.Update(snapshot);
+        }
+
+        private void ApplyPrResult(ProviderResult result)
+        {
+            if (_prPresenter == null)
+            {
+                return;
+            }
+
+            PrSnapshot snapshot = result.Snapshot as PrSnapshot;
+            if (snapshot == null)
+            {
+                snapshot = new PrSnapshot();
+                snapshot.Exists = false;
+                snapshot.Health = result.Health == SnapshotHealth.Live
+                    ? SnapshotHealth.Error
+                    : result.Health;
+                snapshot.Error = string.IsNullOrEmpty(result.Error)
+                    ? "PR 数据不可用"
+                    : result.Error;
+                snapshot.UpdatedUtc = result.UpdatedUtc;
+            }
+
+            _prPresenter.Update(snapshot);
+        }
+
+        private void ApplyCustomResult(ProviderResult result)
+        {
+            if (result.ProviderId == null || _customPresenters.Count == 0)
+            {
+                return;
+            }
+
+            string id = result.ProviderId.Substring(
+                CustomCommandProvider.ProviderIdPrefix.Length);
+            CustomCommandSegmentPresenter presenter;
+            if (!_customPresenters.TryGetValue(id, out presenter))
+            {
+                return;
+            }
+
+            CustomCommandSnapshot snapshot = result.Snapshot as CustomCommandSnapshot;
+            if (snapshot == null)
+            {
+                snapshot = new CustomCommandSnapshot();
+                snapshot.Id = id;
+                snapshot.Health = SnapshotHealth.Error;
+                snapshot.Error = string.IsNullOrEmpty(result.Error)
+                    ? "命令执行失败"
+                    : result.Error;
+                snapshot.UpdatedUtc = result.UpdatedUtc;
+            }
+
+            presenter.Update(snapshot);
         }
 
         private void ApplyAgentResult(ProviderResult result)
@@ -984,6 +1290,27 @@ namespace VibeBar
                 _agentProvider.UpdateStaleMinutes(_settings.Agent.StaleMinutes);
             }
 
+            if (_portProvider != null)
+            {
+                _portProvider.UpdateSettings(
+                    _settings.Ports.WatchPorts,
+                    _settings.Ports.PollSeconds);
+            }
+
+            if (_prProvider != null)
+            {
+                _prProvider.UpdateSettings(
+                    _settings.Git.RepoPath,
+                    _settings.Pr.PollSeconds);
+            }
+
+            // 自定义命令段按新配置增删，再补齐 ui.segments 默认项。
+            SyncCustomSegments(true);
+            if (_segments != null)
+            {
+                _segments.EnsureSettingDefaults(_settings);
+            }
+
             if (_tray != null)
             {
                 _tray.UpdatePrivacy(_settings.General.PrivacyMode);
@@ -1003,6 +1330,7 @@ namespace VibeBar
                     _settings.Ui.MinWidth);
                 _host.SetAnchor(_settings.Ui.IsLeftAnchor);
                 _host.SetOffsetX(_settings.Ui.OffsetX);
+                _host.SetMonitor(_settings.Ui.IsSecondaryMonitor);
                 _host.RefreshLayout();
             }
 
@@ -1013,6 +1341,14 @@ namespace VibeBar
             {
                 _scheduler.Refresh(DeepSeekQuotaProvider.ProviderIdValue);
                 _scheduler.Refresh(GitProvider.ProviderIdValue);
+                _scheduler.Refresh(PortProvider.ProviderIdValue);
+                _scheduler.Refresh(PrProvider.ProviderIdValue);
+
+                foreach (KeyValuePair<string, CustomCommandProvider> pair
+                    in _customProviders)
+                {
+                    _scheduler.Refresh(pair.Value.Id);
+                }
             }
         }
 
@@ -1068,6 +1404,7 @@ namespace VibeBar
             _host.SetWidthLimits(_settings.Ui.MaxWidth, _settings.Ui.MinWidth);
             _host.SetAnchor(_settings.Ui.IsLeftAnchor);
             _host.SetOffsetX(_settings.Ui.OffsetX);
+            _host.SetMonitor(_settings.Ui.IsSecondaryMonitor);
             _panel.SetSections(BuildDetailSections());
             _visualSignature = string.Empty;
             _detailSignature = string.Empty;
@@ -1221,9 +1558,15 @@ namespace VibeBar
             _quotaSnapshot = null;
             _gitProvider = null;
             _agentProvider = null;
+            _portProvider = null;
+            _prProvider = null;
+            _customProviders.Clear();
             _quotaPresenter = null;
             _gitPresenter = null;
             _agentPresenter = null;
+            _portPresenter = null;
+            _prPresenter = null;
+            _customPresenters.Clear();
             _segments = null;
 
             Theme.Changed -= OnThemeChanged;

@@ -13,6 +13,9 @@ namespace VibeBar
         public QuotaSettings Quota = new QuotaSettings();
         public GitSettings Git = new GitSettings();
         public AgentSettings Agent = new AgentSettings();
+        public PortsSettings Ports = new PortsSettings();
+        public PrSettings Pr = new PrSettings();
+        public CustomSettings Custom = new CustomSettings();
         public UiSettings Ui = new UiSettings();
         public HookSettings Hooks = new HookSettings();
     }
@@ -75,6 +78,46 @@ namespace VibeBar
         public int StaleMinutes = 10;
     }
 
+    /// <summary>
+    /// 端口段配置。WatchPorts 为空表示显示全部监听端口；
+    /// 非空时只显示列表内的端口（常用前端/后端开发端口）。
+    /// </summary>
+    internal sealed class PortsSettings
+    {
+        public int PollSeconds = 5;
+        public int[] WatchPorts = CreateDefaultWatchPorts();
+
+        internal static int[] CreateDefaultWatchPorts()
+        {
+            return new int[] { 3000, 3001, 4200, 4321, 5000, 5173, 8000, 8080, 9000 };
+        }
+    }
+
+    internal sealed class PrSettings
+    {
+        public int PollSeconds = 60;
+    }
+
+    /// <summary>
+    /// 自定义命令（D4 / E1）。命令由用户本人编写，只在本地执行。
+    /// Format 为 "text"（取首个非空行）或 "json"（{text,tooltip,color,url}）。
+    /// </summary>
+    internal sealed class CustomCommandSettings
+    {
+        public string Id = string.Empty;
+        public string Label = string.Empty;
+        public string Command = string.Empty;
+        public int IntervalSeconds = 30;
+        public string Format = "text";
+        public string Url = string.Empty;
+        public bool Enabled = true;
+    }
+
+    internal sealed class CustomSettings
+    {
+        public List<CustomCommandSettings> Commands = new List<CustomCommandSettings>();
+    }
+
     internal sealed class SegmentSetting
     {
         public string Id;
@@ -91,6 +134,9 @@ namespace VibeBar
         // Anchor = "right" 时偏移从托盘左缘算；"left" 时从任务栏左缘算。
         public string Anchor = "right";
         public int OffsetX = 8;
+
+        // 显示器：primary（主屏任务栏）或 secondary（副屏任务栏）。
+        public string Monitor = "primary";
 
         // 段的显隐/顺序。新增信息显示时由 AppController 的注册表补齐默认项。
         public List<SegmentSetting> Segments = new List<SegmentSetting>();
@@ -155,7 +201,8 @@ namespace VibeBar
                 {
                     setting = new SegmentSetting();
                     setting.Id = descriptor.Id;
-                    setting.Enabled = true;
+                    // 可选段（端口/PR）默认关闭，避免首次升级就多出一段噪音。
+                    setting.Enabled = descriptor.DefaultEnabled;
                     setting.Priority = descriptor.DefaultPriority;
                     Segments.Add(setting);
                 }
@@ -241,6 +288,18 @@ namespace VibeBar
                 settings.OffsetX = 400;
             }
 
+            if (string.Equals(
+                settings.Monitor,
+                "secondary",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                settings.Monitor = "secondary";
+            }
+            else
+            {
+                settings.Monitor = "primary";
+            }
+
             if (settings.HoverOpacity < 0)
             {
                 settings.HoverOpacity = 0;
@@ -291,6 +350,17 @@ namespace VibeBar
                 return string.Equals(
                     Anchor,
                     "left",
+                    StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        internal bool IsSecondaryMonitor
+        {
+            get
+            {
+                return string.Equals(
+                    Monitor,
+                    "secondary",
                     StringComparison.OrdinalIgnoreCase);
             }
         }
@@ -454,12 +524,29 @@ namespace VibeBar
                 agent["enabled"] = settings.Agent.Enabled;
                 agent["staleMinutes"] = settings.Agent.StaleMinutes;
 
+                Dictionary<string, object> ports = EnsureObject(_root, "ports");
+                settings.Ports.PollSeconds =
+                    NormalizePortPollSeconds(settings.Ports.PollSeconds);
+                ports["pollSeconds"] = settings.Ports.PollSeconds;
+                ports["watchPorts"] = BuildIntArray(settings.Ports.WatchPorts);
+
+                Dictionary<string, object> pr = EnsureObject(_root, "pr");
+                settings.Pr.PollSeconds = NormalizePrPollSeconds(settings.Pr.PollSeconds);
+                pr["pollSeconds"] = settings.Pr.PollSeconds;
+
+                NormalizeCustomCommands(settings.Custom);
+                Dictionary<string, object> custom = EnsureObject(_root, "custom");
+                custom["commands"] = BuildCustomCommands(
+                    custom,
+                    settings.Custom.Commands);
+
                 UiSettings.Normalize(settings.Ui);
                 Dictionary<string, object> ui = EnsureObject(_root, "ui");
                 ui["maxWidth"] = settings.Ui.MaxWidth;
                 ui["minWidth"] = settings.Ui.MinWidth;
                 ui["anchor"] = settings.Ui.Anchor;
                 ui["offsetX"] = settings.Ui.OffsetX;
+                ui["monitor"] = settings.Ui.Monitor;
                 ui["segments"] = BuildSegments(settings.Ui.Segments);
                 // 旧版三键不再写出。
                 ui.Remove("showQuota");
@@ -534,6 +621,31 @@ namespace VibeBar
                 settings.Agent.StaleMinutes = GetInt(agent, "staleMinutes", 10);
             }
 
+            Dictionary<string, object> ports = GetObject(root, "ports");
+            if (ports != null)
+            {
+                settings.Ports.PollSeconds =
+                    NormalizePortPollSeconds(GetInt(ports, "pollSeconds", 5));
+                int[] watchPorts = GetIntArray(ports, "watchPorts");
+                if (watchPorts != null)
+                {
+                    settings.Ports.WatchPorts = watchPorts;
+                }
+            }
+
+            Dictionary<string, object> pr = GetObject(root, "pr");
+            if (pr != null)
+            {
+                settings.Pr.PollSeconds =
+                    NormalizePrPollSeconds(GetInt(pr, "pollSeconds", 60));
+            }
+
+            Dictionary<string, object> custom = GetObject(root, "custom");
+            if (custom != null)
+            {
+                ApplyCustomCommands(settings.Custom, custom);
+            }
+
             Dictionary<string, object> ui = GetObject(root, "ui");
             if (ui != null)
             {
@@ -541,6 +653,7 @@ namespace VibeBar
                 settings.Ui.MinWidth = GetInt(ui, "minWidth", 120);
                 settings.Ui.Anchor = GetString(ui, "anchor", "right");
                 settings.Ui.OffsetX = GetInt(ui, "offsetX", 8);
+                settings.Ui.Monitor = GetString(ui, "monitor", "primary");
                 ApplySegments(settings.Ui, ui);
                 settings.Ui.HoverColor = GetString(ui, "hoverColor", string.Empty);
                 settings.Ui.HoverOpacity = GetInt(ui, "hoverOpacity", 235);
@@ -738,6 +851,314 @@ namespace VibeBar
             }
 
             return result;
+        }
+
+        private static object[] BuildIntArray(int[] values)
+        {
+            if (values == null || values.Length == 0)
+            {
+                return new object[0];
+            }
+
+            object[] result = new object[values.Length];
+            for (int index = 0; index < values.Length; index++)
+            {
+                result[index] = values[index];
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// 读取整数数组。键缺失返回 null（保留默认值），显式空数组返回空数组。
+        /// </summary>
+        private static int[] GetIntArray(Dictionary<string, object> parent, string key)
+        {
+            object value;
+            if (!parent.TryGetValue(key, out value) || value == null)
+            {
+                return null;
+            }
+
+            IList items = value as IList;
+            if (items == null)
+            {
+                Log.Write("设置项类型错误：" + key + "，已使用默认值");
+                return null;
+            }
+
+            List<int> result = new List<int>();
+            for (int index = 0; index < items.Count; index++)
+            {
+                object item = items[index];
+                int port = 0;
+                bool parsed = false;
+                if (item is int)
+                {
+                    port = (int)item;
+                    parsed = true;
+                }
+                else if (item is long)
+                {
+                    port = (int)(long)item;
+                    parsed = true;
+                }
+                else if (item is decimal)
+                {
+                    port = (int)(decimal)item;
+                    parsed = true;
+                }
+                else if (item is double)
+                {
+                    port = (int)(double)item;
+                    parsed = true;
+                }
+
+                if (!parsed || port <= 0 || port > 65535)
+                {
+                    Log.Write("设置项数值非法：" + key + "，已忽略该元素");
+                    continue;
+                }
+
+                if (!result.Contains(port))
+                {
+                    result.Add(port);
+                }
+            }
+
+            return result.ToArray();
+        }
+
+        private static int NormalizePortPollSeconds(int seconds)
+        {
+            if (seconds <= 0)
+            {
+                return 5;
+            }
+
+            if (seconds < 2)
+            {
+                return 2;
+            }
+
+            if (seconds > 600)
+            {
+                return 600;
+            }
+
+            return seconds;
+        }
+
+        private static int NormalizePrPollSeconds(int seconds)
+        {
+            if (seconds <= 0)
+            {
+                return 60;
+            }
+
+            if (seconds < 30)
+            {
+                return 30;
+            }
+
+            if (seconds > 3600)
+            {
+                return 3600;
+            }
+
+            return seconds;
+        }
+
+        /// <summary>
+        /// 自定义命令的合法性收敛：命令为空则丢弃，id 缺失/重复自动补齐，
+        /// 间隔与格式回退默认值，最多保留 8 条。
+        /// </summary>
+        internal static void NormalizeCustomCommands(CustomSettings settings)
+        {
+            if (settings == null || settings.Commands == null)
+            {
+                return;
+            }
+
+            List<CustomCommandSettings> valid = new List<CustomCommandSettings>();
+            List<string> ids = new List<string>();
+            for (int index = 0; index < settings.Commands.Count; index++)
+            {
+                CustomCommandSettings command = settings.Commands[index];
+                if (command == null
+                    || string.IsNullOrEmpty(command.Command)
+                    || command.Command.Trim().Length == 0)
+                {
+                    continue;
+                }
+
+                if (valid.Count >= 8)
+                {
+                    Log.Write("自定义命令超过 8 条，已忽略多余配置");
+                    break;
+                }
+
+                string id = command.Id == null ? string.Empty : command.Id.Trim();
+                if (id.Length == 0)
+                {
+                    id = "cmd" + (index + 1).ToString();
+                }
+
+                string unique = id;
+                int suffix = 2;
+                while (ids.Contains(unique))
+                {
+                    unique = id + "-" + suffix.ToString();
+                    suffix++;
+                }
+
+                command.Id = unique;
+                ids.Add(unique);
+
+                if (string.IsNullOrEmpty(command.Label)
+                    || command.Label.Trim().Length == 0)
+                {
+                    command.Label = unique;
+                }
+
+                if (command.IntervalSeconds <= 0)
+                {
+                    command.IntervalSeconds = 30;
+                }
+                else if (command.IntervalSeconds < 10)
+                {
+                    command.IntervalSeconds = 10;
+                }
+                else if (command.IntervalSeconds > 3600)
+                {
+                    command.IntervalSeconds = 3600;
+                }
+
+                command.Format = string.Equals(
+                    command.Format,
+                    "json",
+                    StringComparison.OrdinalIgnoreCase)
+                    ? "json"
+                    : "text";
+
+                if (command.Url == null)
+                {
+                    command.Url = string.Empty;
+                }
+
+                valid.Add(command);
+            }
+
+            settings.Commands = valid;
+        }
+
+        private static object[] BuildCustomCommands(
+            Dictionary<string, object> custom,
+            List<CustomCommandSettings> commands)
+        {
+            if (commands == null || commands.Count == 0)
+            {
+                return new object[0];
+            }
+
+            IList existing = null;
+            object value;
+            if (custom.TryGetValue("commands", out value))
+            {
+                existing = value as IList;
+            }
+
+            object[] result = new object[commands.Count];
+            for (int index = 0; index < commands.Count; index++)
+            {
+                CustomCommandSettings command = commands[index];
+                Dictionary<string, object> item = null;
+                if (existing != null && command != null)
+                {
+                    for (int existingIndex = 0; existingIndex < existing.Count; existingIndex++)
+                    {
+                        Dictionary<string, object> candidate =
+                            existing[existingIndex] as Dictionary<string, object>;
+                        if (candidate == null)
+                        {
+                            continue;
+                        }
+
+                        object idValue;
+                        if (candidate.TryGetValue("id", out idValue)
+                            && idValue is string
+                            && string.Equals(
+                                (string)idValue,
+                                command.Id,
+                                StringComparison.Ordinal))
+                        {
+                            item = candidate;
+                            break;
+                        }
+                    }
+                }
+
+                if (item == null)
+                {
+                    item = new Dictionary<string, object>();
+                }
+
+                if (command != null)
+                {
+                    item["id"] = command.Id;
+                    item["label"] = command.Label;
+                    item["command"] = command.Command;
+                    item["intervalSeconds"] = command.IntervalSeconds;
+                    item["format"] = command.Format;
+                    item["url"] = command.Url;
+                    item["enabled"] = command.Enabled;
+                }
+
+                result[index] = item;
+            }
+
+            return result;
+        }
+
+        private static void ApplyCustomCommands(
+            CustomSettings settings,
+            Dictionary<string, object> custom)
+        {
+            object value;
+            if (!custom.TryGetValue("commands", out value) || value == null)
+            {
+                return;
+            }
+
+            IList items = value as IList;
+            if (items == null)
+            {
+                Log.Write("设置项类型错误：custom.commands，已使用默认值");
+                return;
+            }
+
+            settings.Commands.Clear();
+            for (int index = 0; index < items.Count; index++)
+            {
+                Dictionary<string, object> item =
+                    items[index] as Dictionary<string, object>;
+                if (item == null)
+                {
+                    continue;
+                }
+
+                CustomCommandSettings command = new CustomCommandSettings();
+                command.Id = GetString(item, "id", string.Empty);
+                command.Label = GetString(item, "label", string.Empty);
+                command.Command = GetString(item, "command", string.Empty);
+                command.IntervalSeconds = GetInt(item, "intervalSeconds", 30);
+                command.Format = GetString(item, "format", "text");
+                command.Url = GetString(item, "url", string.Empty);
+                command.Enabled = GetBool(item, "enabled", true);
+                settings.Commands.Add(command);
+            }
+
+            NormalizeCustomCommands(settings);
         }
 
         private static int NormalizeGitPollSeconds(int seconds)

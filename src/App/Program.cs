@@ -32,6 +32,10 @@ namespace VibeBar
                             e.ExceptionObject as Exception);
                     };
 
+                // 代理工具常同时写入 HTTPS_PROXY / https_proxy，会让 .NET Framework
+                // 的 Process.Start 抛 ArgumentException（Git/gh/自定义命令全部失效）。
+                ProcessRunner.SanitizeProcessEnvironment();
+
                 // 托盘图标与右键菜单是 WinForms 控件，异常不走 WPF Dispatcher，
                 // 必须单独挂接 WinForms 线程的异常处理器。
                 Forms.Application.SetUnhandledExceptionMode(

@@ -28,6 +28,47 @@ namespace VibeBar
             _presenters.Add(presenter);
         }
 
+        /// <summary>
+        /// 注销段。自定义命令段在配置变化时需要动态增删。
+        /// </summary>
+        internal bool Unregister(string id)
+        {
+            if (string.IsNullOrEmpty(id))
+            {
+                return false;
+            }
+
+            for (int index = 0; index < _presenters.Count; index++)
+            {
+                if (string.Equals(_presenters[index].Id, id, StringComparison.Ordinal))
+                {
+                    _presenters.RemoveAt(index);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// 返回指定前缀的段 Id（用于按 "cmd:" 前缀维护自定义命令段）。
+        /// </summary>
+        internal IList<string> GetIds(string prefix)
+        {
+            List<string> ids = new List<string>();
+            for (int index = 0; index < _presenters.Count; index++)
+            {
+                string id = _presenters[index].Id;
+                if (prefix == null
+                    || id.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    ids.Add(id);
+                }
+            }
+
+            return ids;
+        }
+
         internal ISegmentPresenter Find(string id)
         {
             for (int index = 0; index < _presenters.Count; index++)
@@ -50,7 +91,8 @@ namespace VibeBar
                 descriptors.Add(new SegmentDescriptor(
                     presenter.Id,
                     presenter.DisplayName,
-                    presenter.DefaultPriority));
+                    presenter.DefaultPriority,
+                    presenter.DefaultEnabled));
             }
 
             return descriptors;
@@ -72,13 +114,26 @@ namespace VibeBar
             List<SegmentVisual> visuals = new List<SegmentVisual>();
             for (int index = 0; index < enabled.Count; index++)
             {
-                visuals.Add(enabled[index].BuildVisual(privacy));
+                // 可选段（端口/PR）在没有数据时返回 null，表示「该段暂时隐藏」。
+                SegmentVisual visual = enabled[index].BuildVisual(privacy);
+                if (visual != null)
+                {
+                    visuals.Add(visual);
+                }
             }
 
-            // 防御：全部关闭时至少显示第一个段（通常是额度）。
-            if (visuals.Count == 0 && _presenters.Count > 0)
+            // 防御：全部关闭或全部无数据时，至少显示第一个有内容的段（通常是额度）。
+            if (visuals.Count == 0)
             {
-                visuals.Add(_presenters[0].BuildVisual(privacy));
+                for (int index = 0; index < _presenters.Count; index++)
+                {
+                    SegmentVisual visual = _presenters[index].BuildVisual(privacy);
+                    if (visual != null)
+                    {
+                        visuals.Add(visual);
+                        break;
+                    }
+                }
             }
 
             return visuals.ToArray();

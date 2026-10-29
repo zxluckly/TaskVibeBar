@@ -4,9 +4,12 @@ namespace VibeBar
 {
     internal enum SegmentKind
     {
-        Quota,
-        Git,
-        Agent
+        Quota = 0,
+        Git = 1,
+        Agent = 2,
+        Port = 3,
+        Pr = 4,
+        Custom = 5
     }
 
     internal enum SnapshotSource
@@ -111,5 +114,68 @@ namespace VibeBar
         public SnapshotHealth Health;
         public string Error;
         public DateTime UpdatedUtc;
+    }
+
+    /// <summary>
+    /// 一个监听中的本地端口。Provider 只填数据，不涉及展示格式。
+    /// </summary>
+    internal sealed class PortEntry
+    {
+        public int Port;
+        public int ProcessId;
+        public string ProcessName;
+    }
+
+    internal sealed class PortSnapshot
+    {
+        public PortEntry[] Ports;
+        public int[] WatchPorts;
+        public bool WatchAll;
+        public DateTime UpdatedUtc;
+        public SnapshotHealth Health;
+        public string Error;
+
+        public int Count
+        {
+            get { return Ports == null ? 0 : Ports.Length; }
+        }
+    }
+
+    /// <summary>
+    /// 当前仓库的 PR / CI 快照。Exists=false 表示没有打开的 PR（该段隐藏）。
+    /// </summary>
+    internal sealed class PrSnapshot
+    {
+        public int Number;
+        public string Title;
+        public string State;
+        public bool IsDraft;
+        public string ReviewDecision;
+        public int ChecksPassed;
+        public int ChecksFailed;
+        public int ChecksPending;
+        public string Url;
+        public bool Exists;
+        public DateTime UpdatedUtc;
+        public SnapshotHealth Health;
+        public string Error;
+    }
+
+    /// <summary>
+    /// 自定义命令段的输出。E1 协议：命令 stdout → JSON {text, tooltip, color, url}。
+    /// </summary>
+    internal sealed class CustomCommandSnapshot
+    {
+        public string Id;
+        public string Label;
+        public string Text;
+        public string Tooltip;
+        public ColorRole Role;
+        public string Url;
+        public int DurationMilliseconds;
+        public int ExitCode;
+        public DateTime UpdatedUtc;
+        public SnapshotHealth Health;
+        public string Error;
     }
 }

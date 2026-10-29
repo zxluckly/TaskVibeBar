@@ -94,6 +94,59 @@ namespace VibeBar
             }
         }
 
+        /// <summary>
+        /// 注销并释放一个 Provider（自定义命令段在配置变化时动态增删）。
+        /// </summary>
+        internal void Unregister(string id)
+        {
+            if (string.IsNullOrEmpty(id))
+            {
+                return;
+            }
+
+            Registration removed = null;
+            lock (_sync)
+            {
+                for (int index = 0; index < _registrations.Count; index++)
+                {
+                    if (string.Equals(
+                        _registrations[index].Provider.Id,
+                        id,
+                        StringComparison.Ordinal))
+                    {
+                        removed = _registrations[index];
+                        _registrations.RemoveAt(index);
+                        break;
+                    }
+                }
+
+                if (removed == null)
+                {
+                    return;
+                }
+
+                try
+                {
+                    if (removed.Cancellation != null)
+                    {
+                        removed.Cancellation.Cancel();
+                    }
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+            }
+
+            try
+            {
+                removed.Provider.Dispose();
+            }
+            catch (Exception exception)
+            {
+                Log.Write("释放 Provider 失败：" + id + "，" + exception.GetType().Name);
+            }
+        }
+
         internal void Refresh(string id)
         {
             if (string.IsNullOrEmpty(id))
@@ -197,11 +250,14 @@ namespace VibeBar
                     }
                     catch (Exception exception)
                     {
+                        // 只记录类型与消息（Log 会脱敏），便于定位 Provider 内部异常。
                         Log.Write(
                             "Provider 执行异常："
                             + registration.Provider.Id
                             + "，"
-                            + exception.GetType().Name);
+                            + exception.GetType().Name
+                            + "："
+                            + exception.Message);
                         result = CreateErrorResult(
                             registration.Provider.Id,
                             "数据源异常");
@@ -304,7 +360,9 @@ namespace VibeBar
                     "Provider 查询失败："
                     + provider.Id
                     + "，"
-                    + exception.GetType().Name);
+                    + exception.GetType().Name
+                    + "："
+                    + exception.Message);
                 return CreateErrorResult(provider.Id, "数据源异常");
             }
             finally

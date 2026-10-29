@@ -830,5 +830,502 @@ namespace VibeBar
             visual.Priority = priority;
             return visual;
         }
+
+        // ------------------------------------------------------------------
+        // 端口 / 本地服务
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// 端口段：无监听端口时返回 null（该段隐藏），避免长期占位制造噪音。
+        /// </summary>
+        internal static SegmentVisual CreatePort(PortSnapshot snapshot)
+        {
+            if (snapshot == null)
+            {
+                return null;
+            }
+
+            if (snapshot.Health == SnapshotHealth.Error)
+            {
+                SegmentVisual failed = Create(
+                    SegmentKind.Port,
+                    "端口 —",
+                    string.IsNullOrEmpty(snapshot.Error)
+                        ? "端口探测失败"
+                        : "端口：" + snapshot.Error,
+                    40);
+                failed.Role = ColorRole.Warning;
+                return failed;
+            }
+
+            if (snapshot.Count == 0)
+            {
+                return null;
+            }
+
+            SegmentVisual visual = new SegmentVisual();
+            visual.Kind = SegmentKind.Port;
+            visual.Glyph = string.Empty;
+            visual.Pulse = false;
+            visual.Priority = 40;
+            visual.Text = FormatPortText(snapshot.Ports);
+            visual.Role = ColorRole.Neutral;
+            visual.Tooltip = "监听端口："
+                + snapshot.Count.ToString(CultureInfo.InvariantCulture)
+                + " 个";
+            return visual;
+        }
+
+        private static string FormatPortText(PortEntry[] ports)
+        {
+            if (ports == null || ports.Length == 0)
+            {
+                return "端口 —";
+            }
+
+            StringBuilder builder = new StringBuilder();
+            int shown = 0;
+            for (int index = 0; index < ports.Length && shown < 2; index++)
+            {
+                PortEntry entry = ports[index];
+                if (entry == null)
+                {
+                    continue;
+                }
+
+                if (shown > 0)
+                {
+                    builder.Append(' ');
+                }
+
+                builder.Append(':');
+                builder.Append(entry.Port.ToString(CultureInfo.InvariantCulture));
+                shown++;
+            }
+
+            if (ports.Length > shown)
+            {
+                builder.Append(" +");
+                builder.Append((ports.Length - shown).ToString(CultureInfo.InvariantCulture));
+            }
+
+            return builder.ToString();
+        }
+
+        internal static DetailSection CreatePortDetail(PortSnapshot snapshot)
+        {
+            DetailSection section = new DetailSection();
+            section.Title = "本地服务";
+            section.Actions = new DetailAction[0];
+
+            List<string> lines = new List<string>();
+            if (snapshot == null)
+            {
+                lines.Add("暂无端口数据");
+                section.Lines = lines.ToArray();
+                return section;
+            }
+
+            if (snapshot.Health == SnapshotHealth.Error)
+            {
+                lines.Add("原因：" + (string.IsNullOrEmpty(snapshot.Error)
+                    ? "端口探测失败"
+                    : snapshot.Error));
+                section.Lines = lines.ToArray();
+                return section;
+            }
+
+            lines.Add(snapshot.WatchAll ? "范围：全部监听端口" : "范围：关注列表");
+
+            if (snapshot.Count == 0)
+            {
+                lines.Add("暂无监听端口");
+                if (!snapshot.WatchAll)
+                {
+                    lines.Add("可在 settings.json 的 ports.watchPorts 中调整关注端口");
+                }
+
+                section.Lines = lines.ToArray();
+                return section;
+            }
+
+            lines.Add(
+                "监听中："
+                + snapshot.Count.ToString(CultureInfo.InvariantCulture)
+                + " 个");
+
+            for (int index = 0; index < snapshot.Ports.Length; index++)
+            {
+                PortEntry entry = snapshot.Ports[index];
+                if (entry == null)
+                {
+                    continue;
+                }
+
+                string line = entry.Port.ToString(CultureInfo.InvariantCulture);
+                if (!string.IsNullOrEmpty(entry.ProcessName))
+                {
+                    line = line + " · " + entry.ProcessName;
+                }
+
+                if (entry.ProcessId > 0)
+                {
+                    line = line
+                        + "（PID "
+                        + entry.ProcessId.ToString(CultureInfo.InvariantCulture)
+                        + "）";
+                }
+
+                lines.Add(line);
+            }
+
+            if (snapshot.UpdatedUtc != DateTime.MinValue)
+            {
+                lines.Add(
+                    "最后更新："
+                    + snapshot.UpdatedUtc.ToLocalTime().ToString(
+                        "yyyy-MM-dd HH:mm:ss",
+                        CultureInfo.InvariantCulture));
+            }
+
+            section.Lines = lines.ToArray();
+            return section;
+        }
+
+        // ------------------------------------------------------------------
+        // PR / CI
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// PR 段：没有打开的 PR、或数据源不可用时返回 null（隐藏该段）。
+        /// </summary>
+        internal static SegmentVisual CreatePr(PrSnapshot snapshot)
+        {
+            if (snapshot == null || !snapshot.Exists)
+            {
+                return null;
+            }
+
+            if (snapshot.Health == SnapshotHealth.Error)
+            {
+                SegmentVisual failed = Create(
+                    SegmentKind.Pr,
+                    "PR —",
+                    string.IsNullOrEmpty(snapshot.Error)
+                        ? "PR 数据不可用"
+                        : "PR：" + snapshot.Error,
+                    50);
+                failed.Role = ColorRole.Warning;
+                return failed;
+            }
+
+            SegmentVisual visual = new SegmentVisual();
+            visual.Kind = SegmentKind.Pr;
+            visual.Glyph = string.Empty;
+            visual.Pulse = false;
+            visual.Priority = 50;
+            visual.Text = BuildPrText(snapshot);
+            visual.Role = ResolvePrRole(snapshot);
+            visual.Tooltip = "PR #"
+                + snapshot.Number.ToString(CultureInfo.InvariantCulture);
+            return visual;
+        }
+
+        private static string BuildPrText(PrSnapshot snapshot)
+        {
+            StringBuilder builder = new StringBuilder();
+            builder.Append('#');
+            builder.Append(snapshot.Number.ToString(CultureInfo.InvariantCulture));
+
+            if (snapshot.IsDraft)
+            {
+                builder.Append(" 草稿");
+            }
+
+            if (snapshot.ChecksFailed > 0)
+            {
+                builder.Append(" ✗");
+                builder.Append(snapshot.ChecksFailed.ToString(CultureInfo.InvariantCulture));
+            }
+            else if (snapshot.ChecksPending > 0)
+            {
+                builder.Append(" …");
+                builder.Append(snapshot.ChecksPending.ToString(CultureInfo.InvariantCulture));
+            }
+            else if (snapshot.ChecksPassed > 0)
+            {
+                builder.Append(" ✓");
+            }
+
+            return builder.ToString();
+        }
+
+        private static ColorRole ResolvePrRole(PrSnapshot snapshot)
+        {
+            if (snapshot.ChecksFailed > 0
+                || string.Equals(
+                    snapshot.ReviewDecision,
+                    "CHANGES_REQUESTED",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return ColorRole.Critical;
+            }
+
+            if (snapshot.ChecksPending > 0
+                || snapshot.Health == SnapshotHealth.Stale)
+            {
+                return ColorRole.Warning;
+            }
+
+            if (snapshot.ChecksPassed > 0
+                && string.Equals(
+                    snapshot.ReviewDecision,
+                    "APPROVED",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return ColorRole.Success;
+            }
+
+            return ColorRole.Neutral;
+        }
+
+        internal static DetailSection CreatePrDetail(PrSnapshot snapshot)
+        {
+            DetailSection section = new DetailSection();
+            section.Title = "PR / CI";
+            section.Actions = new DetailAction[0];
+
+            List<string> lines = new List<string>();
+            if (snapshot == null || !snapshot.Exists)
+            {
+                lines.Add("当前仓库没有打开的 PR");
+                section.Lines = lines.ToArray();
+                return section;
+            }
+
+            lines.Add(
+                "#"
+                + snapshot.Number.ToString(CultureInfo.InvariantCulture)
+                + " "
+                + (string.IsNullOrEmpty(snapshot.Title) ? "—" : snapshot.Title));
+            lines.Add("状态：" + PrStateText(snapshot.State, snapshot.IsDraft));
+
+            if (!string.IsNullOrEmpty(snapshot.ReviewDecision))
+            {
+                lines.Add("审核：" + ReviewText(snapshot.ReviewDecision));
+            }
+
+            lines.Add(
+                "检查：通过 "
+                + snapshot.ChecksPassed.ToString(CultureInfo.InvariantCulture)
+                + " · 失败 "
+                + snapshot.ChecksFailed.ToString(CultureInfo.InvariantCulture)
+                + " · 等待 "
+                + snapshot.ChecksPending.ToString(CultureInfo.InvariantCulture));
+
+            if (!string.IsNullOrEmpty(snapshot.Url))
+            {
+                lines.Add("链接：" + snapshot.Url);
+            }
+
+            if (snapshot.UpdatedUtc != DateTime.MinValue)
+            {
+                lines.Add(
+                    "最后更新："
+                    + snapshot.UpdatedUtc.ToLocalTime().ToString(
+                        "yyyy-MM-dd HH:mm:ss",
+                        CultureInfo.InvariantCulture));
+            }
+
+            if (snapshot.Health == SnapshotHealth.Error
+                && !string.IsNullOrEmpty(snapshot.Error))
+            {
+                lines.Add("错误：" + snapshot.Error);
+            }
+
+            section.Lines = lines.ToArray();
+            return section;
+        }
+
+        private static string PrStateText(string state, bool isDraft)
+        {
+            if (string.Equals(state, "OPEN", StringComparison.OrdinalIgnoreCase))
+            {
+                return isDraft ? "草稿" : "打开";
+            }
+
+            if (string.Equals(state, "MERGED", StringComparison.OrdinalIgnoreCase))
+            {
+                return "已合并";
+            }
+
+            if (string.Equals(state, "CLOSED", StringComparison.OrdinalIgnoreCase))
+            {
+                return "已关闭";
+            }
+
+            return string.IsNullOrEmpty(state) ? "未知" : state;
+        }
+
+        private static string ReviewText(string decision)
+        {
+            if (string.Equals(decision, "APPROVED", StringComparison.OrdinalIgnoreCase))
+            {
+                return "已批准";
+            }
+
+            if (string.Equals(
+                decision,
+                "CHANGES_REQUESTED",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                return "要求修改";
+            }
+
+            if (string.Equals(
+                decision,
+                "REVIEW_REQUIRED",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                return "等待审核";
+            }
+
+            return decision;
+        }
+
+        // ------------------------------------------------------------------
+        // 自定义命令段（E1 协议）
+        // ------------------------------------------------------------------
+
+        internal static SegmentVisual CreateCustom(CustomCommandSnapshot snapshot, string label)
+        {
+            SegmentVisual visual = new SegmentVisual();
+            visual.Kind = SegmentKind.Custom;
+            visual.Glyph = string.Empty;
+            visual.Pulse = false;
+            visual.Priority = 60;
+
+            string prefix = string.IsNullOrEmpty(label) ? string.Empty : label + " ";
+
+            if (snapshot == null)
+            {
+                visual.Text = prefix + "—";
+                visual.Role = ColorRole.Neutral;
+                visual.Tooltip = label;
+                return visual;
+            }
+
+            if (snapshot.Health == SnapshotHealth.Error)
+            {
+                visual.Text = prefix + "!";
+                visual.Role = ColorRole.Warning;
+                visual.Tooltip = string.IsNullOrEmpty(snapshot.Error)
+                    ? "命令执行失败"
+                    : snapshot.Error;
+                return visual;
+            }
+
+            visual.Text = prefix + (string.IsNullOrEmpty(snapshot.Text)
+                ? "—"
+                : snapshot.Text);
+            visual.Role = snapshot.Role;
+            visual.Tooltip = string.IsNullOrEmpty(snapshot.Tooltip)
+                ? (string.IsNullOrEmpty(label) ? "自定义命令" : label)
+                : snapshot.Tooltip;
+            return visual;
+        }
+
+        internal static DetailSection CreateCustomDetail(
+            CustomCommandSnapshot snapshot,
+            string label,
+            string command)
+        {
+            DetailSection section = new DetailSection();
+            section.Title = string.IsNullOrEmpty(label) ? "自定义命令" : label;
+            section.Actions = new DetailAction[0];
+
+            List<string> lines = new List<string>();
+            lines.Add("命令：" + (string.IsNullOrEmpty(command) ? "—" : command));
+
+            if (snapshot == null)
+            {
+                lines.Add("输出：—");
+                section.Lines = lines.ToArray();
+                return section;
+            }
+
+            if (snapshot.Health == SnapshotHealth.Error)
+            {
+                lines.Add("错误：" + (string.IsNullOrEmpty(snapshot.Error)
+                    ? "命令执行失败"
+                    : snapshot.Error));
+                section.Lines = lines.ToArray();
+                return section;
+            }
+
+            lines.Add("输出：" + (string.IsNullOrEmpty(snapshot.Text)
+                ? "—"
+                : snapshot.Text));
+
+            if (!string.IsNullOrEmpty(snapshot.Tooltip))
+            {
+                lines.Add("说明：" + snapshot.Tooltip);
+            }
+
+            lines.Add(
+                "退出码："
+                + snapshot.ExitCode.ToString(CultureInfo.InvariantCulture)
+                + " · 耗时 "
+                + snapshot.DurationMilliseconds.ToString(CultureInfo.InvariantCulture)
+                + "ms");
+
+            if (snapshot.UpdatedUtc != DateTime.MinValue)
+            {
+                lines.Add(
+                    "最后更新："
+                    + snapshot.UpdatedUtc.ToLocalTime().ToString(
+                        "yyyy-MM-dd HH:mm:ss",
+                        CultureInfo.InvariantCulture));
+            }
+
+            section.Lines = lines.ToArray();
+            return section;
+        }
+
+        internal static ColorRole ParseColorRole(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return ColorRole.Neutral;
+            }
+
+            string value = text.Trim();
+            if (string.Equals(value, "accent", StringComparison.OrdinalIgnoreCase))
+            {
+                return ColorRole.Accent;
+            }
+
+            if (string.Equals(value, "warning", StringComparison.OrdinalIgnoreCase))
+            {
+                return ColorRole.Warning;
+            }
+
+            if (string.Equals(value, "critical", StringComparison.OrdinalIgnoreCase))
+            {
+                return ColorRole.Critical;
+            }
+
+            if (string.Equals(value, "waiting", StringComparison.OrdinalIgnoreCase))
+            {
+                return ColorRole.Waiting;
+            }
+
+            if (string.Equals(value, "success", StringComparison.OrdinalIgnoreCase))
+            {
+                return ColorRole.Success;
+            }
+
+            return ColorRole.Neutral;
+        }
     }
 }

@@ -367,6 +367,26 @@ namespace VibeBar
                 }
             }
 
+            // 可选段（PR / 端口 / 自定义命令）优先折叠，额度与等待确认的会话最后折叠。
+            SegmentKind[] optional = new SegmentKind[]
+            {
+                SegmentKind.Pr,
+                SegmentKind.Port,
+                SegmentKind.Custom
+            };
+
+            for (int kindIndex = 0; kindIndex < optional.Length; kindIndex++)
+            {
+                for (int index = 0; index < visuals.Length; index++)
+                {
+                    SegmentVisual visual = visuals[index];
+                    if (visual != null && visual.Kind == optional[kindIndex])
+                    {
+                        order.Add(index);
+                    }
+                }
+            }
+
             return order;
         }
 

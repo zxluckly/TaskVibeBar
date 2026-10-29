@@ -15,9 +15,13 @@ VibeBar 是一个驻留在 Windows 任务栏通知区左侧的轻量状态条，
 | Git | 显示 `分支*脏数`、`↑领先↓落后`、detached、冲突；文件变化约 2 秒内更新 |
 | Claude 会话 | 通过 Hooks 显示空闲、思考中、工具、等待确认、完成；等待确认时呼吸提示 |
 | 模型与上下文 | 优先用 statusLine 官方数据；缺失时从会话转录的 `message.usage` 兜底估算；空闲时任务栏段显示 `34%` |
+| 本地服务（端口） | 枚举 LISTEN 端口 → PID → 进程名；段显示 `:5173` 或 `:3000 :5173 +1`，面板可按端口打开 `http://localhost:端口`；无监听端口时自动隐藏 |
+| PR / CI | 通过 `gh pr view` 显示 `#123 ✓` / `#123 ✗2` / `#123 …1`；无 PR、未装 gh 时自动隐藏，面板可打开 PR |
+| 自定义命令 | 一条命令一个段，`cmd` 执行 + 3 秒超时；支持纯文本首行或 JSON `{text,tooltip,color,url}` 协议 |
 | 详情面板 | 额度、Git、会话分区；无数据区块自动隐藏；内容过长可滚动；按钮操作不抢焦点 |
 | 宽度折叠 | 任务栏空间不足时按 Git → 非等待会话 → 额度的顺序折叠为 `+N`，面板仍显示全部 |
 | 显示区域 | 设置中可选靠左/靠右吸附，再调水平偏移与最大宽度，以及额度/Git/会话三个模块的显隐 |
+| 显示器 | 设置中可选主屏或副屏任务栏；DPI 缩放、显示设置变更、竖向任务栏都会自动重排 |
 | 悬停背景 | 设置中可选跟随主题色，或自定义 `#RRGGBB` + 0–100% 透明度，带实时预览 |
 | 隐私模式 | 金额显示为 `¥•••`，仓库名/分支/项目名显示为 `…`；托盘一键切换并持久化 |
 | 开机自启 | 写入当前用户 `HKCU\...\Run\VibeBar`，托盘勾选状态与注册表一致 |
@@ -94,15 +98,39 @@ bin\VibeBar.Cli.exe
     "enabled": true,
     "staleMinutes": 10
   },
+  "ports": {
+    "pollSeconds": 5,
+    "watchPorts": [3000, 3001, 4200, 4321, 5000, 5173, 8000, 8080, 9000]
+  },
+  "pr": {
+    "pollSeconds": 60
+  },
+  "custom": {
+    "commands": [
+      {
+        "id": "build",
+        "label": "构建",
+        "command": "npm run build --silent",
+        "intervalSeconds": 60,
+        "format": "text",
+        "url": "",
+        "enabled": true
+      }
+    ]
+  },
   "ui": {
     "maxWidth": 420,
     "minWidth": 120,
     "anchor": "right",
     "offsetX": 8,
+    "monitor": "primary",
     "segments": [
       { "id": "quota", "enabled": true, "priority": 10 },
       { "id": "git", "enabled": true, "priority": 20 },
-      { "id": "agent", "enabled": true, "priority": 30 }
+      { "id": "agent", "enabled": true, "priority": 30 },
+      { "id": "ports", "enabled": false, "priority": 40 },
+      { "id": "pr", "enabled": false, "priority": 50 },
+      { "id": "build", "enabled": true, "priority": 60 }
     ],
     "hoverColor": "",
     "hoverOpacity": 235
@@ -114,6 +142,10 @@ bin\VibeBar.Cli.exe
 - `quota.refreshSeconds` 最低 60 秒；`git.pollSeconds` 最低 10 秒。
 - `ui.anchor` 为 `right`（靠右吸附，偏移从托盘左缘算）或 `left`（靠左吸附，偏移从任务栏左缘算）；`ui.offsetX` 为 0–400 px；`ui.hoverColor` 为空表示跟随主题色，格式 `#RRGGBB`；`ui.hoverOpacity` 为 0–255（0 表示悬停也完全透明）。
 - `ui.segments` 控制各信息段的显隐与排序；新增段时注册 Presenter 后会由程序自动补齐默认项，旧版 `showQuota/showGit/showAgent` 会自动迁移。
+- `ui.monitor` 为 `primary`（主屏任务栏）或 `secondary`（副屏 `Shell_SecondaryTrayWnd`，不存在时回退主屏）。
+- `ports.watchPorts` 为空数组表示显示全部监听端口；非空时只显示列表内的端口（1–65535，自动去重）。`ports.pollSeconds` 范围 2–600。
+- `pr.pollSeconds` 范围 30–3600；PR 段复用 `git.repoPath`，需要本机安装并登录 GitHub CLI（`gh auth login`）。
+- `custom.commands` 每条最多 8 条：`command` 为空会被忽略，`id` 缺失/重复自动补齐，`intervalSeconds` 收敛到 10–3600，`format` 仅 `text`/`json`。命令以 `cmd /d /c` 在本机执行，超时 3 秒。
 - API Key 有两种来源：
   1. 在设置窗口的「API Key」中填写，保存到 `secrets.dat`（DPAPI 加密）；
   2. 勾选「从 Claude Code 配置读取 Key」，运行时从 `%USERPROFILE%\.claude\settings.json` 的 `env.ANTHROPIC_AUTH_TOKEN` 读取，只在内存中使用。
@@ -134,6 +166,38 @@ bin\VibeBar.Cli.exe
 
 > v1 不安装/透传 Claude Code `statusLine`；`statusline-original.txt` 为后续版本预留。
 
+## 扩展段：端口 / PR / 自定义命令
+
+这三个段默认关闭（自定义命令除外，配置即生效），在设置 →「显示模块」里勾选后显示。
+
+### 本地服务（端口）
+
+- 用 IP Helper API（`GetExtendedTcpTable`）枚举 LISTEN 状态的 TCP 端口，再取 PID 与进程名，不解析 `netstat` 文本（避免中文系统输出差异）。
+- 段显示前两个端口，其余折叠为 `+N`；没有匹配端口时整段隐藏，详情面板也不占位。
+- 面板按钮：`打开 :5173`（默认浏览器打开 `http://localhost:端口`）、`复制端口`。
+
+### PR / CI
+
+- 在 `git.repoPath` 目录执行 `gh pr view --json number,title,state,isDraft,reviewDecision,statusCheckRollup,url`。
+- 段显示 `#123 ✓`（全部通过）/ `#123 ✗2`（2 个失败）/ `#123 …1`（1 个等待）；草稿追加 `草稿`。
+- 没有打开的 PR、未安装 `gh`、未登录时只隐藏该段，不影响其他段；面板会说明原因。
+
+### 自定义命令
+
+命令以 `cmd /d /c <命令>` 执行，超时 3 秒，输出支持两种协议：
+
+1. **纯文本**（`format: "text"`）：取首个非空行，超过 48 字截断；
+2. **JSON**（`format: "json"`）：
+
+```json
+{"text":"构建通过","tooltip":"耗时 12s","color":"success","url":"https://ci.example/1"}
+```
+
+`color` 取 `neutral|accent|warning|critical|waiting|success`。JSON 解析失败会自动降级为纯文本；
+退出码非 0 时仍显示输出，颜色降级为警告，详情里给出退出码与耗时。
+
+> ⚠ 自定义命令由你本人编写并在本机执行，效果等同于在命令行直接运行，请只填写可信命令。
+
 ## 隐私模式与开机自启
 
 - 隐私模式：托盘右键 →「隐私模式」。切换后立即重绘任务栏段与详情面板，并写入
@@ -144,12 +208,15 @@ bin\VibeBar.Cli.exe
 
 ## 已知限制
 
-- 任务栏位置、多显示器、不同 DPI 缩放（125%/150%/200%）仍需在更多环境验证。
+- 任务栏位置、多显示器、不同 DPI 缩放（125%/150%/200%）仍需在更多环境验证；当前已支持主/副屏任务栏选择、DPI 变更与竖向任务栏重排，但极端分辨率组合未做穷举。
 - `claude -p` 打印模式可能不触发 statusLine；此时上下文会在下一次 Hook 事件时从会话转录兜底读取，交互式会话最完整。
 - 不合并旧的外设电量监控工具。
 - 余额来自 DeepSeek 官方接口；日志、余额等数据只在本地处理，不上传。
 - Git 监听针对当前工作区，超大仓库/网络盘可能需要更长刷新时间。
 - Hook 安装目前只支持 Claude Code 的 `settings.json`。
+- 端口段只能看到 TCP 监听端口，不含 UDP；进程名对系统进程可能为空（权限限制）。
+- PR 段依赖 GitHub CLI 且需要登录；私有仓库/企业实例以 `gh` 自身配置为准。
+- 自定义命令以当前用户权限执行，未做沙箱；超时只杀直接子进程。
 
 ## 项目结构
 
@@ -158,13 +225,24 @@ src/
 ├─ App/        入口、AppController、设置、凭证、日志、Win32
 ├─ Models/     数据契约与段视图模型
 ├─ Ui/         任务栏宿主、段布局、详情面板、托盘、设置窗口
-├─ Providers/  DeepSeek / Git / Claude 会话取数
+├─ Providers/  DeepSeek / Git / Claude 会话 / 端口 / PR / 自定义命令
 ├─ Segments/   段契约、注册表、峰谷、Presenters/
 ├─ EventBus/   Hooks 命名管道与安装器
 └─ Cli/        VibeBar.Cli.exe
+
+tests/         离线自测（纯逻辑，不依赖 WPF）
 ```
 
 新增信息显示的标准步骤（Provider → Presenter → 注册 → 设置自动出现开关）见 [CLAUDE.md](CLAUDE.md)。
+
+## 自测
+
+```bat
+tests\build-tests.bat
+```
+
+只编译 Provider / SegmentFactory / 设置收敛等纯逻辑代码，不启动界面、不读写 `%APPDATA%\VibeBar\settings.json`。
+当前覆盖：设置收敛、端口段格式化与过滤、IP Helper 枚举、PR JSON 解析、自定义命令文本/JSON 协议、`cmd` 实际执行与 3 秒超时。
 
 ## 开发文档
 
