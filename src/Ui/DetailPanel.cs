@@ -20,6 +20,7 @@ namespace VibeBar
     {
         private readonly Border _root;
         private readonly TextBlock _heading;
+        private readonly Button _closeButton;
         private readonly ScrollViewer _scroll;
         private readonly StackPanel _rows;
         private readonly Button _settingsButton;
@@ -29,9 +30,12 @@ namespace VibeBar
         private readonly DispatcherTimer _showTimer;
         private readonly DispatcherTimer _hideTimer;
         private readonly DispatcherTimer _visibilityTimer;
+        private readonly DispatcherTimer _cursorTimer;
 
         private DetailSection[] _sections = new DetailSection[0];
         private Drawing.Rectangle _anchor = Drawing.Rectangle.Empty;
+        private IntPtr _taskbar = IntPtr.Zero;
+        private DateTime _outsideSince = DateTime.MinValue;
         private bool _panelVisible;
         private bool _pinned;
         private bool _disposed;
@@ -73,7 +77,24 @@ namespace VibeBar
             _heading.FontFamily = UiTheme.UiFont;
             _heading.FontSize = 14;
             _heading.FontWeight = FontWeights.SemiBold;
-            _heading.Margin = new Thickness(0, 0, 0, 10);
+            _heading.Margin = new Thickness(0, 0, 0, 0);
+            _heading.VerticalAlignment = VerticalAlignment.Center;
+
+            // 面板是无激活窗口，没有键盘焦点；给一个显式关闭按钮，
+            // 避免用户只能「再点一次段」才能收起面板。
+            _closeButton = CreateButton("×", delegate { HideNow(); });
+            _closeButton.FontSize = 15;
+            _closeButton.Padding = new Thickness(8, 0, 8, 2);
+            _closeButton.Margin = new Thickness(0);
+            _closeButton.HorizontalAlignment = HorizontalAlignment.Right;
+            _closeButton.VerticalAlignment = VerticalAlignment.Center;
+            _closeButton.ToolTip = "关闭面板";
+
+            DockPanel header = new DockPanel();
+            header.Margin = new Thickness(0, 0, 0, 10);
+            DockPanel.SetDock(_closeButton, Dock.Right);
+            header.Children.Add(_closeButton);
+            header.Children.Add(_heading);
 
             _rows = new StackPanel();
 
@@ -97,8 +118,8 @@ namespace VibeBar
             _settingsButton.Margin = new Thickness(0, 12, 0, 0);
 
             DockPanel dock = new DockPanel();
-            DockPanel.SetDock(_heading, Dock.Top);
-            dock.Children.Add(_heading);
+            DockPanel.SetDock(header, Dock.Top);
+            dock.Children.Add(header);
             DockPanel.SetDock(_settingsButton, Dock.Bottom);
             dock.Children.Add(_settingsButton);
             dock.Children.Add(_scroll);
@@ -119,13 +140,12 @@ namespace VibeBar
                     return;
                 }
 
-                IntPtr taskbar = NativeMethods.FindWindow("Shell_TrayWnd", null);
-                if (!IsTaskbarEffectivelyVisible(taskbar))
+                if (!IsTaskbarEffectivelyVisible(_taskbar))
                 {
                     return;
                 }
 
-                ShowPanel(taskbar);
+                ShowPanel(_taskbar);
             };
 
             _hideTimer = new DispatcherTimer();
@@ -149,12 +169,17 @@ namespace VibeBar
                     return;
                 }
 
-                IntPtr taskbar = NativeMethods.FindWindow("Shell_TrayWnd", null);
-                if (!IsTaskbarEffectivelyVisible(taskbar))
+                if (!IsTaskbarEffectivelyVisible(_taskbar))
                 {
                     HideNow();
                 }
             };
+
+            // 固定（点击段）后的兜底：鼠标离开面板与悬浮条 4 秒后自动收起，
+            // 避免面板「锁死」在屏幕上只能靠再点一次段才能关掉。
+            _cursorTimer = new DispatcherTimer();
+            _cursorTimer.Interval = TimeSpan.FromMilliseconds(400);
+            _cursorTimer.Tick += delegate { CheckCursorOutside(); };
 
             ApplyTheme();
         }
@@ -198,16 +223,15 @@ namespace VibeBar
                         }
 
                         UpdateLayout();
-                        IntPtr taskbar = NativeMethods.FindWindow("Shell_TrayWnd", null);
-                        if (IsTaskbarEffectivelyVisible(taskbar))
+                        if (IsTaskbarEffectivelyVisible(_taskbar))
                         {
-                            PositionPanel(taskbar);
+                            PositionPanel(_taskbar);
                         }
                     }));
             }
         }
 
-        internal void ScheduleShow(Drawing.Rectangle anchor)
+        internal void ScheduleShow(Drawing.Rectangle anchor, IntPtr taskbar)
         {
             if (_disposed)
             {
@@ -215,6 +239,11 @@ namespace VibeBar
             }
 
             _anchor = anchor;
+            if (taskbar != IntPtr.Zero)
+            {
+                _taskbar = taskbar;
+            }
+
             _hideTimer.Stop();
             if (_panelVisible)
             {
@@ -249,10 +278,16 @@ namespace VibeBar
             {
                 _hideTimer.Stop();
                 _showTimer.Stop();
+                _outsideSince = DateTime.MinValue;
+                _cursorTimer.Start();
+            }
+            else
+            {
+                _cursorTimer.Stop();
             }
         }
 
-        internal void ShowPinned(Drawing.Rectangle anchor)
+        internal void ShowPinned(Drawing.Rectangle anchor, IntPtr taskbar)
         {
             if (_disposed)
             {
@@ -260,14 +295,20 @@ namespace VibeBar
             }
 
             _anchor = anchor;
+            if (taskbar != IntPtr.Zero)
+            {
+                _taskbar = taskbar;
+            }
+
             _pinned = true;
             _showTimer.Stop();
             _hideTimer.Stop();
+            _outsideSince = DateTime.MinValue;
 
-            IntPtr taskbar = NativeMethods.FindWindow("Shell_TrayWnd", null);
-            if (IsTaskbarEffectivelyVisible(taskbar))
+            if (IsTaskbarEffectivelyVisible(_taskbar))
             {
-                ShowPanel(taskbar);
+                ShowPanel(_taskbar);
+                _cursorTimer.Start();
             }
         }
 
@@ -284,6 +325,8 @@ namespace VibeBar
             _showTimer.Stop();
             _hideTimer.Stop();
             _visibilityTimer.Stop();
+            _cursorTimer.Stop();
+            _outsideSince = DateTime.MinValue;
             _panelVisible = false;
             _pinned = false;
 
@@ -294,6 +337,68 @@ namespace VibeBar
 
             Opacity = 0;
             Hide();
+        }
+
+        /// <summary>
+        /// 固定状态下的兜底收起：鼠标既不在面板、也不在悬浮条上超过 4 秒，
+        /// 自动关闭并取消固定（面板无激活窗口，无法靠失焦事件判断）。
+        /// </summary>
+        private void CheckCursorOutside()
+        {
+            if (_disposed || !_panelVisible || !_pinned)
+            {
+                _cursorTimer.Stop();
+                return;
+            }
+
+            Drawing.Point cursor;
+            try
+            {
+                cursor = Forms.Cursor.Position;
+            }
+            catch
+            {
+                return;
+            }
+
+            Drawing.Rectangle panelRect = GetPanelScreenRect();
+            bool insidePanel = panelRect.Width > 0 && panelRect.Contains(cursor);
+            bool insideAnchor = _anchor.Width > 0 && _anchor.Height > 0
+                && _anchor.Contains(cursor);
+
+            if (insidePanel || insideAnchor)
+            {
+                _outsideSince = DateTime.MinValue;
+                return;
+            }
+
+            if (_outsideSince == DateTime.MinValue)
+            {
+                _outsideSince = DateTime.UtcNow;
+                return;
+            }
+
+            if ((DateTime.UtcNow - _outsideSince).TotalSeconds >= 4.0)
+            {
+                HideNow();
+            }
+        }
+
+        private Drawing.Rectangle GetPanelScreenRect()
+        {
+            IntPtr handle = new WindowInteropHelper(this).Handle;
+            if (handle == IntPtr.Zero || !NativeMethods.IsWindow(handle))
+            {
+                return Drawing.Rectangle.Empty;
+            }
+
+            NativeMethods.RECT rect;
+            if (!NativeMethods.GetWindowRect(handle, out rect))
+            {
+                return Drawing.Rectangle.Empty;
+            }
+
+            return Drawing.Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
         }
 
         internal void ApplyTheme()
@@ -315,6 +420,7 @@ namespace VibeBar
             }
 
             ApplyButtonTheme(_settingsButton);
+            ApplyButtonTheme(_closeButton);
 
             for (int index = 0; index < _actionButtons.Count; index++)
             {
@@ -333,6 +439,7 @@ namespace VibeBar
             _showTimer.Stop();
             _hideTimer.Stop();
             _visibilityTimer.Stop();
+            _cursorTimer.Stop();
             _panelVisible = false;
             _pinned = false;
 
@@ -389,16 +496,6 @@ namespace VibeBar
             int width = (int)Math.Ceiling(actualWidth * scaleX);
             int height = (int)Math.Ceiling(actualHeight * scaleY);
 
-            Drawing.Rectangle work;
-            try
-            {
-                work = Forms.Screen.FromHandle(taskbar).WorkingArea;
-            }
-            catch
-            {
-                work = Forms.Screen.PrimaryScreen.WorkingArea;
-            }
-
             Drawing.Rectangle anchor = _anchor;
             if (anchor.Width <= 0 || anchor.Height <= 0)
             {
@@ -411,10 +508,25 @@ namespace VibeBar
                         taskbarRect.Right,
                         taskbarRect.Bottom);
                 }
-                else
-                {
-                    anchor = work;
-                }
+            }
+
+            // 工作区必须取「悬浮条所在显示器」，不能取主屏任务栏所在显示器，
+            // 否则副屏模式下详情面板会被夹到主屏上（或被主屏边界裁掉）。
+            Drawing.Rectangle work;
+            try
+            {
+                work = anchor.Width > 0 && anchor.Height > 0
+                    ? Forms.Screen.FromRectangle(anchor).WorkingArea
+                    : Forms.Screen.FromHandle(taskbar).WorkingArea;
+            }
+            catch
+            {
+                work = Forms.Screen.PrimaryScreen.WorkingArea;
+            }
+
+            if (anchor.Width <= 0 || anchor.Height <= 0)
+            {
+                anchor = work;
             }
 
             int x = anchor.Right - width;

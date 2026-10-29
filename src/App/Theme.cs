@@ -8,7 +8,9 @@ namespace VibeBar
     {
         private static readonly object Sync = new object();
         private static bool _cachedLight;
+        private static bool _cachedAppLight;
         private static DateTime _cachedAt = DateTime.MinValue;
+        private static DateTime _cachedAppAt = DateTime.MinValue;
         private static Dispatcher _dispatcher;
         private static bool _subscribed;
 
@@ -55,9 +57,27 @@ namespace VibeBar
             return _cachedLight;
         }
 
+        /// <summary>
+        /// 普通应用窗口（设置窗口）的深浅色。Windows 的「系统」与「应用」
+        /// 主题可以不同：任务栏用 SystemUsesLightTheme，应用窗口用
+        /// AppsUseLightTheme，混用会出现「深色底 + 白色输入框」。
+        /// </summary>
+        internal static bool IsAppLight()
+        {
+            if ((DateTime.UtcNow - _cachedAppAt).TotalSeconds < 1.0)
+            {
+                return _cachedAppLight;
+            }
+
+            _cachedAppLight = ReadAppLightTheme();
+            _cachedAppAt = DateTime.UtcNow;
+            return _cachedAppLight;
+        }
+
         internal static void Invalidate()
         {
             _cachedAt = DateTime.MinValue;
+            _cachedAppAt = DateTime.MinValue;
         }
 
         private static void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
@@ -118,6 +138,37 @@ namespace VibeBar
             catch
             {
                 // 注册表读取失败时保持深色，避免启动失败。
+            }
+
+            return false;
+        }
+
+        private static bool ReadAppLightTheme()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(
+                    @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+                {
+                    if (key != null)
+                    {
+                        object apps = key.GetValue("AppsUseLightTheme");
+                        if (apps is int)
+                        {
+                            return (int)apps != 0;
+                        }
+
+                        object system = key.GetValue("SystemUsesLightTheme");
+                        if (system is int)
+                        {
+                            return (int)system != 0;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // 同上：读取失败时按深色处理。
             }
 
             return false;

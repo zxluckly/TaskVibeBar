@@ -5,7 +5,10 @@ using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Data;
 using System.Windows.Media;
+using Drawing = System.Drawing;
 using Forms = System.Windows.Forms;
 
 namespace VibeBar
@@ -40,6 +43,9 @@ namespace VibeBar
         private readonly TextBlock _hoverOpacityLabel;
         private readonly Border _hoverPreview;
         private readonly TextBlock _hookStatusText;
+        private StackPanel _rootPanel;
+        private Drawing.Rectangle _targetWork = Drawing.Rectangle.Empty;
+        private bool _placementHooked;
 
         internal event EventHandler Saved;
 
@@ -63,13 +69,13 @@ namespace VibeBar
             _hookInstaller = new HookInstaller();
 
             Title = "VibeBar 设置";
-            Width = 480;
+            Width = 520;
             SizeToContent = SizeToContent.Height;
             ResizeMode = ResizeMode.NoResize;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             ShowInTaskbar = false;
-            Background = new SolidColorBrush(UiTheme.PanelBackground);
-            Foreground = new SolidColorBrush(UiTheme.TextPrimary);
+            Background = new SolidColorBrush(UiTheme.WindowBackground);
+            Foreground = new SolidColorBrush(UiTheme.AppTextPrimary);
             FontFamily = new FontFamily("Microsoft YaHei UI");
             FontSize = 13;
 
@@ -95,6 +101,7 @@ namespace VibeBar
             _intervalBox.Height = 30;
             _intervalBox.Width = 160;
             _intervalBox.HorizontalAlignment = HorizontalAlignment.Left;
+            _intervalBox.Template = CreateComboBoxTemplate();
             AddIntervalItem(60);
             AddIntervalItem(120);
             AddIntervalItem(300);
@@ -119,6 +126,7 @@ namespace VibeBar
             _anchorBox.Height = 30;
             _anchorBox.Width = 180;
             _anchorBox.HorizontalAlignment = HorizontalAlignment.Left;
+            _anchorBox.Template = CreateComboBoxTemplate();
 
             ComboBoxItem rightAnchor = new ComboBoxItem();
             rightAnchor.Content = "靠右（托盘左侧）";
@@ -140,6 +148,7 @@ namespace VibeBar
             _monitorBox.Height = 30;
             _monitorBox.Width = 180;
             _monitorBox.HorizontalAlignment = HorizontalAlignment.Left;
+            _monitorBox.Template = CreateComboBoxTemplate();
 
             ComboBoxItem primaryMonitor = new ComboBoxItem();
             primaryMonitor.Content = "主屏任务栏";
@@ -191,7 +200,7 @@ namespace VibeBar
                 box.Content = descriptor.DisplayName;
                 box.Tag = descriptor.Id;
                 box.IsChecked = settings.Ui.IsSegmentEnabled(descriptor.Id);
-                box.Margin = new Thickness(0, 0, 14, 0);
+                box.Margin = new Thickness(0, 4, 18, 4);
                 _segmentChecks.Add(box);
             }
 
@@ -249,6 +258,7 @@ namespace VibeBar
             _hoverPreview.Margin = new Thickness(10, 0, 0, 0);
             _hoverPreview.VerticalAlignment = VerticalAlignment.Center;
 
+            StyleCheckBoxes();
             UpdateHoverControls();
             UpdateHoverPreview();
 
@@ -266,12 +276,432 @@ namespace VibeBar
                 360.0,
                 SystemParameters.WorkArea.Height - 120.0);
             Content = scroll;
+
+            // 主题可能在设置窗口打开期间切换（系统深浅色），统一在窗口级重刷。
+            Theme.Changed += OnThemeChanged;
+            Closed += delegate { Theme.Changed -= OnThemeChanged; };
+            ApplyTheme();
+        }
+
+        /// <summary>
+        /// 把设置窗口放到悬浮条所在显示器居中（副屏场景不要总弹在主屏）。
+        /// </summary>
+        internal void PlaceOnMonitor(Drawing.Rectangle anchor)
+        {
+            if (anchor.Width <= 0 || anchor.Height <= 0)
+            {
+                return;
+            }
+
+            try
+            {
+                _targetWork = Forms.Screen.FromRectangle(anchor).WorkingArea;
+            }
+            catch
+            {
+                _targetWork = Drawing.Rectangle.Empty;
+                return;
+            }
+
+            WindowStartupLocation = WindowStartupLocation.Manual;
+
+            if (IsLoaded)
+            {
+                ApplyPlacement();
+                return;
+            }
+
+            if (!_placementHooked)
+            {
+                _placementHooked = true;
+                Loaded += delegate { ApplyPlacement(); };
+            }
+        }
+
+        private void ApplyPlacement()
+        {
+            if (_targetWork.Width <= 0 || _targetWork.Height <= 0)
+            {
+                return;
+            }
+
+            DpiScale dpi = VisualTreeHelper.GetDpi(this);
+            double scaleX = dpi.DpiScaleX <= 0 ? 1.0 : dpi.DpiScaleX;
+            double scaleY = dpi.DpiScaleY <= 0 ? 1.0 : dpi.DpiScaleY;
+
+            double width = ActualWidth > 0 ? ActualWidth : Width;
+            double height = ActualHeight > 0 ? ActualHeight : 420;
+
+            Left = _targetWork.Left / scaleX
+                + (_targetWork.Width / scaleX - width) / 2.0;
+            Top = _targetWork.Top / scaleY
+                + (_targetWork.Height / scaleY - height) / 2.0;
+        }
+
+        /// <summary>
+        /// ComboBox 的默认模板用写死的浅色渐变绘制，深色主题下会出现
+        /// 「白底浅灰字」。这里用代码构建一个跟随主题的最小模板：
+        /// 边框 + 选中项文字 + ▾ + 下拉列表。
+        /// </summary>
+        private ControlTemplate CreateComboBoxTemplate()
+        {
+            ControlTemplate template = new ControlTemplate(typeof(ComboBox));
+
+            FrameworkElementFactory grid = new FrameworkElementFactory(typeof(Grid));
+
+            FrameworkElementFactory toggle = new FrameworkElementFactory(typeof(ToggleButton));
+            toggle.SetValue(ToggleButton.FocusableProperty, false);
+            toggle.SetValue(ToggleButton.ClickModeProperty, ClickMode.Press);
+            toggle.SetValue(ToggleButton.TemplateProperty, CreateComboToggleTemplate());
+            toggle.SetValue(
+                Control.BackgroundProperty,
+                new TemplateBindingExtension(Control.BackgroundProperty));
+            toggle.SetValue(
+                Control.BorderBrushProperty,
+                new TemplateBindingExtension(Control.BorderBrushProperty));
+
+            Binding openBinding = new Binding("IsDropDownOpen");
+            openBinding.RelativeSource =
+                new RelativeSource(RelativeSourceMode.TemplatedParent);
+            openBinding.Mode = BindingMode.TwoWay;
+            toggle.SetValue(ToggleButton.IsCheckedProperty, openBinding);
+            grid.AppendChild(toggle);
+
+            FrameworkElementFactory selection = new FrameworkElementFactory(
+                typeof(ContentPresenter));
+            selection.SetValue(
+                ContentPresenter.ContentProperty,
+                new TemplateBindingExtension(ComboBox.SelectionBoxItemProperty));
+            selection.SetValue(
+                ContentPresenter.MarginProperty,
+                new Thickness(9, 0, 26, 0));
+            selection.SetValue(
+                ContentPresenter.VerticalAlignmentProperty,
+                VerticalAlignment.Center);
+            selection.SetValue(
+                ContentPresenter.IsHitTestVisibleProperty,
+                false);
+            grid.AppendChild(selection);
+
+            FrameworkElementFactory arrow = new FrameworkElementFactory(typeof(TextBlock));
+            arrow.SetValue(TextBlock.TextProperty, "▾");
+            arrow.SetValue(TextBlock.FontSizeProperty, 11.0);
+            arrow.SetValue(
+                TextBlock.HorizontalAlignmentProperty,
+                HorizontalAlignment.Right);
+            arrow.SetValue(
+                TextBlock.VerticalAlignmentProperty,
+                VerticalAlignment.Center);
+            arrow.SetValue(TextBlock.MarginProperty, new Thickness(0, 0, 9, 0));
+            arrow.SetValue(TextBlock.IsHitTestVisibleProperty, false);
+            grid.AppendChild(arrow);
+
+            FrameworkElementFactory popup = new FrameworkElementFactory(typeof(Popup));
+            popup.Name = "PART_Popup";
+            popup.SetValue(Popup.PlacementProperty, PlacementMode.Bottom);
+            popup.SetValue(Popup.AllowsTransparencyProperty, true);
+            popup.SetValue(Popup.PopupAnimationProperty, PopupAnimation.Slide);
+
+            Binding popupBinding = new Binding("IsDropDownOpen");
+            popupBinding.RelativeSource =
+                new RelativeSource(RelativeSourceMode.TemplatedParent);
+            popupBinding.Mode = BindingMode.TwoWay;
+            popup.SetValue(Popup.IsOpenProperty, popupBinding);
+
+            FrameworkElementFactory popupBorder = new FrameworkElementFactory(typeof(Border));
+            popupBorder.SetValue(Border.CornerRadiusProperty, new CornerRadius(4));
+            popupBorder.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+            popupBorder.SetValue(Border.MarginProperty, new Thickness(0, 2, 0, 0));
+            popupBorder.SetValue(Border.SnapsToDevicePixelsProperty, true);
+            popupBorder.SetValue(
+                Border.BackgroundProperty,
+                new TemplateBindingExtension(Control.BackgroundProperty));
+            popupBorder.SetValue(
+                Border.BorderBrushProperty,
+                new TemplateBindingExtension(Control.BorderBrushProperty));
+
+            Binding widthBinding = new Binding("ActualWidth");
+            widthBinding.RelativeSource =
+                new RelativeSource(RelativeSourceMode.TemplatedParent);
+            popupBorder.SetValue(FrameworkElement.MinWidthProperty, widthBinding);
+
+            FrameworkElementFactory scroll = new FrameworkElementFactory(
+                typeof(ScrollViewer));
+            scroll.SetValue(ScrollViewer.MaxHeightProperty, 240.0);
+            scroll.SetValue(
+                ScrollViewer.VerticalScrollBarVisibilityProperty,
+                ScrollBarVisibility.Auto);
+            scroll.SetValue(
+                ScrollViewer.HorizontalScrollBarVisibilityProperty,
+                ScrollBarVisibility.Disabled);
+
+            scroll.AppendChild(new FrameworkElementFactory(typeof(ItemsPresenter)));
+            popupBorder.AppendChild(scroll);
+            popup.AppendChild(popupBorder);
+            grid.AppendChild(popup);
+
+            template.VisualTree = grid;
+            return template;
+        }
+
+        private static ControlTemplate CreateComboToggleTemplate()
+        {
+            ControlTemplate template = new ControlTemplate(typeof(ToggleButton));
+
+            FrameworkElementFactory border = new FrameworkElementFactory(typeof(Border));
+            border.SetValue(
+                Border.CornerRadiusProperty,
+                new CornerRadius(4));
+            border.SetValue(
+                Border.BorderThicknessProperty,
+                new Thickness(1));
+            border.SetValue(
+                Border.SnapsToDevicePixelsProperty,
+                true);
+            border.SetValue(
+                Border.BackgroundProperty,
+                new TemplateBindingExtension(Control.BackgroundProperty));
+            border.SetValue(
+                Border.BorderBrushProperty,
+                new TemplateBindingExtension(Control.BorderBrushProperty));
+
+            template.VisualTree = border;
+            return template;
+        }
+
+        private void ApplyComboTheme(ComboBox combo)
+        {
+            combo.Background = new SolidColorBrush(UiTheme.InputBackground);
+            combo.Foreground = new SolidColorBrush(UiTheme.AppTextPrimary);
+            combo.BorderBrush = new SolidColorBrush(UiTheme.InputBorder);
+        }
+
+        /// <summary>
+        /// CheckBox 的默认模板同样写死浅色方框，深色主题下会露出白块。
+        /// 这里换成「方框 + 勾 + 文字」的最小模板，颜色全部跟随主题。
+        /// </summary>
+        private static ControlTemplate CreateCheckBoxTemplate()
+        {
+            ControlTemplate template = new ControlTemplate(typeof(CheckBox));
+
+            FrameworkElementFactory root = new FrameworkElementFactory(typeof(StackPanel));
+            root.SetValue(StackPanel.OrientationProperty, Orientation.Horizontal);
+
+            FrameworkElementFactory box = new FrameworkElementFactory(typeof(Border));
+            box.Name = "Box";
+            box.SetValue(Border.WidthProperty, 15.0);
+            box.SetValue(Border.HeightProperty, 15.0);
+            box.SetValue(Border.CornerRadiusProperty, new CornerRadius(3));
+            box.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+            box.SetValue(Border.BackgroundProperty, new TemplateBindingExtension(Control.BackgroundProperty));
+            box.SetValue(Border.BorderBrushProperty, new TemplateBindingExtension(Control.BorderBrushProperty));
+            box.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+
+            FrameworkElementFactory check = new FrameworkElementFactory(typeof(TextBlock));
+            check.Name = "Check";
+            check.SetValue(TextBlock.TextProperty, "✓");
+            check.SetValue(TextBlock.FontSizeProperty, 10.5);
+            check.SetValue(TextBlock.FontWeightProperty, FontWeights.Bold);
+            check.SetValue(TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+            check.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
+            check.SetValue(TextBlock.ForegroundProperty, new TemplateBindingExtension(Control.ForegroundProperty));
+            check.SetValue(UIElement.VisibilityProperty, Visibility.Collapsed);
+            box.AppendChild(check);
+            root.AppendChild(box);
+
+            FrameworkElementFactory content = new FrameworkElementFactory(typeof(ContentPresenter));
+            content.SetValue(ContentPresenter.MarginProperty, new Thickness(7, 0, 0, 0));
+            content.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            content.SetValue(ContentPresenter.RecognizesAccessKeyProperty, true);
+            root.AppendChild(content);
+
+            template.VisualTree = root;
+
+            Trigger checkedTrigger = new Trigger();
+            checkedTrigger.Property = ToggleButton.IsCheckedProperty;
+            checkedTrigger.Value = true;
+            checkedTrigger.Setters.Add(new Setter(
+                UIElement.VisibilityProperty,
+                Visibility.Visible,
+                "Check"));
+            template.Triggers.Add(checkedTrigger);
+
+            Trigger hoverTrigger = new Trigger();
+            hoverTrigger.Property = UIElement.IsMouseOverProperty;
+            hoverTrigger.Value = true;
+            hoverTrigger.Setters.Add(new Setter(
+                Border.BorderBrushProperty,
+                new SolidColorBrush(UiTheme.Accent),
+                "Box"));
+            template.Triggers.Add(hoverTrigger);
+
+            return template;
+        }
+
+        private static void ApplyCheckTheme(CheckBox box)
+        {
+            box.Foreground = new SolidColorBrush(UiTheme.AppTextPrimary);
+            box.Background = new SolidColorBrush(UiTheme.InputBackground);
+            box.BorderBrush = new SolidColorBrush(UiTheme.InputBorder);
+        }
+
+        private void StyleCheckBoxes()
+        {
+            PrepareCheckBox(_showTaskbarBox);
+            PrepareCheckBox(_privacyBox);
+            PrepareCheckBox(_claudeKeyBox);
+            PrepareCheckBox(_hoverThemeBox);
+
+            for (int index = 0; index < _segmentChecks.Count; index++)
+            {
+                PrepareCheckBox(_segmentChecks[index]);
+            }
+        }
+
+        private static void PrepareCheckBox(CheckBox box)
+        {
+            if (box == null)
+            {
+                return;
+            }
+
+            box.Template = CreateCheckBoxTemplate();
+            ApplyCheckTheme(box);
+        }
+
+        private void OnThemeChanged(object sender, EventArgs e)
+        {
+            try
+            {
+                ApplyTheme();
+            }
+            catch (Exception exception)
+            {
+                Log.Write("设置窗口刷新主题失败：" + exception.GetType().Name);
+            }
+        }
+
+        /// <summary>
+        /// 让设置窗口整体跟随系统深浅色：底色、文字、输入框、下拉框、按钮
+        /// 都从 UiTheme 取色，避免出现「深色底 + 系统白底输入框」的混搭。
+        /// </summary>
+        private void ApplyTheme()
+        {
+            Background = new SolidColorBrush(UiTheme.WindowBackground);
+            Foreground = new SolidColorBrush(UiTheme.AppTextPrimary);
+
+            // 覆盖系统画刷：ComboBox 的下拉框、CheckBox 的方框、滚动条等由
+            // 默认模板用 SystemColors 绘制，不改这些键就会出现「深色窗口里
+            // 白底下浅灰字」的不可读组合。
+            Resources[SystemColors.WindowBrushKey] =
+                new SolidColorBrush(UiTheme.InputBackground);
+            Resources[SystemColors.WindowTextBrushKey] =
+                new SolidColorBrush(UiTheme.AppTextPrimary);
+            Resources[SystemColors.ControlBrushKey] =
+                new SolidColorBrush(UiTheme.ButtonSurface);
+            Resources[SystemColors.ControlTextBrushKey] =
+                new SolidColorBrush(UiTheme.AppTextPrimary);
+            Resources[SystemColors.GrayTextBrushKey] =
+                new SolidColorBrush(UiTheme.AppTextSecondary);
+            Resources[SystemColors.HighlightBrushKey] =
+                new SolidColorBrush(UiTheme.Accent);
+            Resources[SystemColors.HighlightTextBrushKey] =
+                new SolidColorBrush(UiTheme.AccentText);
+            Resources[SystemColors.MenuBrushKey] =
+                new SolidColorBrush(UiTheme.InputBackground);
+            Resources[SystemColors.MenuTextBrushKey] =
+                new SolidColorBrush(UiTheme.AppTextPrimary);
+
+            ThemeElement(_rootPanel);
+            UpdateHoverPreview();
+        }
+
+        private void ThemeElement(DependencyObject element)
+        {
+            if (element == null)
+            {
+                return;
+            }
+
+            TextBlock text = element as TextBlock;
+            if (text != null)
+            {
+                // 标题（AddLabel）用主色，提示（AddHint）用次级色。
+                text.Foreground = new SolidColorBrush(
+                    text.FontWeight == FontWeights.SemiBold
+                        ? UiTheme.AppTextPrimary
+                        : UiTheme.AppTextSecondary);
+            }
+            else if (element is TextBox || element is PasswordBox)
+            {
+                Control input = (Control)element;
+                input.Background = new SolidColorBrush(UiTheme.InputBackground);
+                input.Foreground = new SolidColorBrush(UiTheme.AppTextPrimary);
+                input.BorderBrush = new SolidColorBrush(UiTheme.InputBorder);
+
+                TextBox textBox = element as TextBox;
+                if (textBox != null)
+                {
+                    textBox.CaretBrush = new SolidColorBrush(UiTheme.AppTextPrimary);
+                }
+            }
+            else if (element is ComboBox)
+            {
+                ComboBox combo = (ComboBox)element;
+                ApplyComboTheme(combo);
+
+                for (int index = 0; index < combo.Items.Count; index++)
+                {
+                    ComboBoxItem item = combo.Items[index] as ComboBoxItem;
+                    if (item != null)
+                    {
+                        item.Foreground = new SolidColorBrush(UiTheme.AppTextPrimary);
+                        item.Background = new SolidColorBrush(UiTheme.InputBackground);
+                    }
+                }
+            }
+            else if (element is CheckBox)
+            {
+                ApplyCheckTheme((CheckBox)element);
+            }
+            else if (element is Button)
+            {
+                Control button = (Control)element;
+                button.Background = new SolidColorBrush(UiTheme.ButtonSurface);
+                button.Foreground = new SolidColorBrush(UiTheme.AppTextPrimary);
+                button.BorderBrush = new SolidColorBrush(UiTheme.InputBorder);
+            }
+
+            Panel panel = element as Panel;
+            if (panel != null)
+            {
+                for (int index = 0; index < panel.Children.Count; index++)
+                {
+                    ThemeElement(panel.Children[index]);
+                }
+
+                return;
+            }
+
+            Decorator decorator = element as Decorator;
+            if (decorator != null)
+            {
+                ThemeElement(decorator.Child);
+                return;
+            }
+
+            ContentControl content = element as ContentControl;
+            if (content != null)
+            {
+                ThemeElement(content.Content as DependencyObject);
+            }
         }
 
         private UIElement BuildLayout()
         {
             StackPanel root = new StackPanel();
             root.Margin = new Thickness(18);
+            _rootPanel = root;
 
             AddLabel(root, "API Key");
             root.Children.Add(_apiKeyBox);
@@ -334,10 +764,18 @@ namespace VibeBar
             moduleLabel.Width = 150;
             moduleLabel.VerticalAlignment = VerticalAlignment.Center;
             moduleRow.Children.Add(moduleLabel);
+
+            // 段数量会随插件式扩展增长（额度/Git/会话/端口/PR/自定义），
+            // 用 WrapPanel 换行，避免像横向 StackPanel 那样被窗口右缘裁掉。
+            WrapPanel segmentRow = new WrapPanel();
+            segmentRow.Orientation = Orientation.Horizontal;
+            segmentRow.MaxWidth = 300;
             for (int index = 0; index < _segmentChecks.Count; index++)
             {
-                moduleRow.Children.Add(_segmentChecks[index]);
+                segmentRow.Children.Add(_segmentChecks[index]);
             }
+
+            moduleRow.Children.Add(segmentRow);
             root.Children.Add(moduleRow);
             AddHint(root, "靠右时偏移从托盘左缘算，靠左时从任务栏左缘算；宽度不足时自动折叠为 +N。至少保留一个模块。");
 
@@ -734,11 +1172,29 @@ namespace VibeBar
                     _settingsStore.Save(_settings);
                 }
 
-                Process.Start("notepad.exe", "\"" + _settingsStore.FilePath + "\"");
+                // 交给 shell 用系统默认关联打开。不要硬编码 notepad.exe：
+                // Win11 的记事本是打包应用，由普通进程直接 CreateProcess
+                // 且环境块被裁剪时会报「找不到 Microsoft.UI.Windowing.Core.dll」。
+                ProcessStartInfo info = new ProcessStartInfo(_settingsStore.FilePath);
+                info.UseShellExecute = true;
+                Process.Start(info);
             }
             catch (Exception exception)
             {
                 Log.Error("打开 settings.json 失败", exception);
+
+                try
+                {
+                    Process.Start(
+                        "explorer.exe",
+                        "/select,\"" + _settingsStore.FilePath + "\"");
+                    return;
+                }
+                catch
+                {
+                    // 继续走提示分支。
+                }
+
                 MessageBox.Show(
                     this,
                     "无法打开 settings.json，可在数据目录中手工编辑。",

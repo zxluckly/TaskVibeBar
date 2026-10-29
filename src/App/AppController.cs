@@ -1013,7 +1013,7 @@ namespace VibeBar
                     return;
                 }
 
-                _panel.ScheduleShow(_host.GetScreenBounds());
+                _panel.ScheduleShow(_host.GetScreenBounds(), _host.TaskbarHandle);
             }
             else
             {
@@ -1038,7 +1038,7 @@ namespace VibeBar
                 return;
             }
 
-            _panel.ShowPinned(_host.GetScreenBounds());
+            _panel.ShowPinned(_host.GetScreenBounds(), _host.TaskbarHandle);
             _pinnedKind = kindValue;
         }
 
@@ -1193,9 +1193,11 @@ namespace VibeBar
 
             if (!string.IsNullOrEmpty(key))
             {
+                Log.Debug("首次启动检查：已配置 API Key，跳过设置窗口");
                 return;
             }
 
+            Log.Write("首次启动检查：未配置 API Key，打开设置窗口");
             ShowSettingsWindow();
         }
 
@@ -1213,6 +1215,13 @@ namespace VibeBar
                     ? new List<SegmentDescriptor>()
                     : _segments.GetDescriptors());
             window.Saved += OnSettingsSaved;
+
+            // 悬浮条在副屏时，设置窗口也在副屏居中，不要跳回主屏。
+            if (_host != null && !_host.IsDestroyed)
+            {
+                window.PlaceOnMonitor(_host.GetScreenBounds());
+            }
+
             _settingsWindow = window;
 
             // 设置窗口需要正常激活；临时取消面板置顶，避免遮挡。

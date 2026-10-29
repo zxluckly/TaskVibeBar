@@ -57,9 +57,11 @@ namespace VibeBar
         {
             get
             {
+                // 详情面板浮在桌面/其他窗口之上（不像任务栏条本身有底色衬着），
+                // 透明度太低会让壁纸透上来影响可读性，这里用接近不透明。
                 return Theme.IsLight()
-                    ? Color.FromArgb(235, 255, 255, 255)
-                    : Color.FromArgb(235, 32, 32, 32);
+                    ? Color.FromArgb(250, 252, 252, 252)
+                    : Color.FromArgb(250, 30, 30, 30);
             }
         }
 
@@ -161,6 +163,91 @@ namespace VibeBar
                 return Theme.IsLight()
                     ? Color.FromArgb(255, 200, 200, 200)
                     : Color.FromArgb(255, 66, 66, 66);
+            }
+        }
+
+        /// <summary>
+        /// 设置窗口底色。面板是半透明的（贴合任务栏），设置窗口必须不透明，
+        /// 否则透出桌面会看不清文字。
+        /// </summary>
+        internal static Color WindowBackground
+        {
+            get
+            {
+                return Theme.IsAppLight()
+                    ? Color.FromArgb(255, 248, 248, 248)
+                    : Color.FromArgb(255, 32, 32, 32);
+            }
+        }
+
+        internal static Color InputBackground
+        {
+            get
+            {
+                return Theme.IsAppLight()
+                    ? Color.FromArgb(255, 255, 255, 255)
+                    : Color.FromArgb(255, 45, 45, 45);
+            }
+        }
+
+        internal static Color InputBorder
+        {
+            get
+            {
+                return Theme.IsAppLight()
+                    ? Color.FromArgb(255, 205, 205, 205)
+                    : Color.FromArgb(255, 74, 74, 74);
+            }
+        }
+
+        internal static Color ButtonSurface
+        {
+            get
+            {
+                return Theme.IsAppLight()
+                    ? Color.FromArgb(255, 253, 253, 253)
+                    : Color.FromArgb(255, 55, 55, 55);
+            }
+        }
+
+        /// <summary>
+        /// 强调色（下拉框选中项、系统 Highlight 画刷）。
+        /// </summary>
+        internal static Color Accent
+        {
+            get
+            {
+                return Theme.IsAppLight()
+                    ? Color.FromArgb(255, 0, 95, 184)
+                    : Color.FromArgb(255, 0, 120, 212);
+            }
+        }
+
+        internal static Color AccentText
+        {
+            get { return Color.FromArgb(255, 255, 255, 255); }
+        }
+
+        /// <summary>
+        /// 设置窗口（普通应用窗口）的文字色，跟随「应用」主题而不是任务栏主题。
+        /// </summary>
+        internal static Color AppTextPrimary
+        {
+            get
+            {
+                return Theme.IsAppLight()
+                    ? Color.FromArgb(255, 27, 27, 27)
+                    : Color.FromArgb(255, 242, 242, 242);
+            }
+        }
+
+        internal static Color AppTextSecondary
+        {
+            get
+            {
+                return Theme.IsAppLight()
+                    ? Color.FromArgb(255, 95, 95, 95)
+                    : Color.FromArgb(255, 168, 168, 168);
             }
         }
 

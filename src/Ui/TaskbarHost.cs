@@ -25,6 +25,9 @@ namespace VibeBar
         private int _offsetX = 8;
         private bool _anchorLeft;
         private bool _secondaryMonitor;
+        private int _lastFoldCount = -1;
+        private bool _lastContentHidden;
+        private double _lastAvailableDip = -1;
 
         internal TaskbarHost(TaskbarStrip strip)
         {
@@ -104,6 +107,14 @@ namespace VibeBar
                 // 标记失效，交由上层重建宿主。
                 MarkDestroyed();
             }
+
+            Log.Debug(
+                "宿主可见性：visible="
+                + IsVisible.ToString()
+                + " destroyed="
+                + _destroyed.ToString()
+                + " taskbar=0x"
+                + _taskbar.ToInt64().ToString("X"));
         }
 
         internal void Reattach()
@@ -224,6 +235,23 @@ namespace VibeBar
             }
 
             return Drawing.Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
+        }
+
+        /// <summary>
+        /// 当前挂载的任务栏窗口（主屏 Shell_TrayWnd 或副屏 Shell_SecondaryTrayWnd）。
+        /// 详情面板据此判断可见性/工作区，避免副屏时误用主屏任务栏。
+        /// </summary>
+        internal IntPtr TaskbarHandle
+        {
+            get
+            {
+                if (_taskbar != IntPtr.Zero && NativeMethods.IsWindow(_taskbar))
+                {
+                    return _taskbar;
+                }
+
+                return ResolveTaskbar();
+            }
         }
 
         protected override void OnSourceInitialized(EventArgs e)
@@ -487,6 +515,27 @@ namespace VibeBar
 
             // 折叠必须在测量窗口宽度之前完成；低于 minWidth 时只保留额度。
             _strip.SetAvailableWidth(availableDip, _minWidth);
+
+            // 只在折叠/隐藏状态变化时记日志，避免每秒刷一条把 log.txt 撑满。
+            int foldCount = _strip.FoldCount;
+            bool hidden = _strip.ContentHidden;
+            if (foldCount != _lastFoldCount
+                || hidden != _lastContentHidden
+                || Math.Abs(availableDip - _lastAvailableDip) >= 1.0)
+            {
+                _lastFoldCount = foldCount;
+                _lastContentHidden = hidden;
+                _lastAvailableDip = availableDip;
+                Log.Debug(
+                    "宿主定位：vertical="
+                    + vertical.ToString()
+                    + " availableDip="
+                    + ((int)availableDip).ToString()
+                    + " hidden="
+                    + hidden.ToString()
+                    + " fold="
+                    + foldCount.ToString());
+            }
 
             try
             {
