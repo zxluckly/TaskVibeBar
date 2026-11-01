@@ -1135,6 +1135,18 @@ namespace VibeBar
             return result;
         }
 
+        // JavaScriptSerializer 把 JSON 数组反序列化成 ArrayList 而不是 object[]，
+        // 因此这里同时兼容两者（历史坑：PR 检查计数、外部段 detail 都踩过）。
+        private static IList AsList(object value)
+        {
+            if (value == null)
+            {
+                return null;
+            }
+
+            return value as IList;
+        }
+
         private static void ApplySegments(
             UiSettings settings,
             Dictionary<string, object> ui)
@@ -1142,10 +1154,10 @@ namespace VibeBar
             object value;
             if (ui.TryGetValue("segments", out value) && value != null)
             {
-                object[] items = value as object[];
+                IList items = AsList(value);
                 if (items != null)
                 {
-                    for (int index = 0; index < items.Length; index++)
+                    for (int index = 0; index < items.Count; index++)
                     {
                         Dictionary<string, object> item =
                             items[index] as Dictionary<string, object>;
@@ -1168,9 +1180,12 @@ namespace VibeBar
                         setting.Priority = GetInt(item, "priority", 0);
                         settings.Segments.Add(setting);
                     }
+
+                    return;
                 }
 
-                return;
+                // 键存在但不是数组：记录并回退到 legacy 分支，避免整段配置被静默丢弃。
+                Log.Write("设置项类型错误：ui.segments，已回退到 showQuota/showGit/showAgent");
             }
 
             // 兼容 T6 之前的 showQuota/showGit/showAgent。
@@ -1320,7 +1335,7 @@ namespace VibeBar
                 return null;
             }
 
-            IList items = value as IList;
+            IList items = AsList(value);
             if (items == null)
             {
                 Log.Write("设置项类型错误：" + key + "，已使用默认值");

@@ -23,6 +23,7 @@ namespace VibeBar
 
             TestSettingsNormalize();
             TestSettingsReloadParse();
+            TestSegmentSettingsParse();
             TestSettingsReloadDebounce();
             TestPortVisual();
             TestPortScanner();
@@ -186,6 +187,107 @@ namespace VibeBar
                 reloaded.Custom.Commands.Count == 2
                     && reloaded.Custom.Commands[0].Id != reloaded.Custom.Commands[1].Id,
                 reloaded.Custom.Commands.Count.ToString());
+        }
+
+        /// <summary>
+        /// ui.segments 解析：JavaScriptSerializer 把 JSON 数组反序列化成 ArrayList 而不是
+        /// object[]，读取端必须按 IList 处理，否则整段配置被静默丢弃、回退到 legacy 分支
+        /// （T17 修复的缺陷：模块显隐与段优先级重启后丢失）。
+        /// </summary>
+        private static void TestSegmentSettingsParse()
+        {
+            Dictionary<string, object> root;
+            string error;
+
+            AppSettings withSegments = SettingsStore.ParseSettings(
+                "{\"ui\":{\"segments\":["
+                + "{\"id\":\"quota\",\"enabled\":true,\"priority\":10},"
+                + "{\"id\":\"git\",\"enabled\":false,\"priority\":99},"
+                + "{\"id\":\"agent\",\"enabled\":true,\"priority\":30}]}}",
+                out root,
+                out error);
+            Check(
+                "ui.segments 解析成功",
+                error == null && withSegments != null,
+                error == null ? "settings=null" : error);
+            Check(
+                "ui.segments 读到全部段",
+                withSegments.Ui.Segments.Count == 3,
+                withSegments.Ui.Segments.Count.ToString(CultureInfo.InvariantCulture));
+            Check(
+                "ui.segments 的 enabled=false 生效",
+                !withSegments.Ui.IsSegmentEnabled("git"),
+                "git 仍被当作启用");
+            Check(
+                "ui.segments 的 priority=99 生效",
+                withSegments.Ui.GetSegmentPriority("git", 20) == 99,
+                withSegments.Ui.GetSegmentPriority("git", 20)
+                    .ToString(CultureInfo.InvariantCulture));
+
+            AppSettings legacy = SettingsStore.ParseSettings(
+                "{\"ui\":{\"anchor\":\"left\"}}",
+                out root,
+                out error);
+            Check(
+                "缺 ui.segments 回退三个内置段且默认启用",
+                error == null
+                    && legacy.Ui.Segments.Count == 3
+                    && legacy.Ui.IsSegmentEnabled("quota")
+                    && legacy.Ui.IsSegmentEnabled("git")
+                    && legacy.Ui.IsSegmentEnabled("agent"),
+                legacy.Ui.Segments.Count.ToString(CultureInfo.InvariantCulture));
+
+            AppSettings legacyOff = SettingsStore.ParseSettings(
+                "{\"ui\":{\"showGit\":false}}",
+                out root,
+                out error);
+            Check(
+                "legacy showGit=false 仍生效",
+                error == null && !legacyOff.Ui.IsSegmentEnabled("git"),
+                "legacy 分支未生效");
+
+            AppSettings emptySegments = SettingsStore.ParseSettings(
+                "{\"ui\":{\"segments\":[]}}",
+                out root,
+                out error);
+            Check(
+                "ui.segments 空数组不抛异常且不产生段",
+                error == null
+                    && emptySegments != null
+                    && emptySegments.Ui.Segments.Count == 0,
+                error == null
+                    ? emptySegments.Ui.Segments.Count.ToString(CultureInfo.InvariantCulture)
+                    : error);
+
+            AppSettings missingEnabled = SettingsStore.ParseSettings(
+                "{\"ui\":{\"segments\":[{\"id\":\"git\",\"priority\":50}]}}",
+                out root,
+                out error);
+            Check(
+                "enabled 缺失默认 true",
+                error == null
+                    && missingEnabled.Ui.FindSegment("git") != null
+                    && missingEnabled.Ui.IsSegmentEnabled("git"),
+                "enabled 缺失被当作关闭");
+            Check(
+                "enabled 缺失时 priority 仍读到 50",
+                missingEnabled.Ui.GetSegmentPriority("git", 20) == 50,
+                missingEnabled.Ui.GetSegmentPriority("git", 20)
+                    .ToString(CultureInfo.InvariantCulture));
+
+            AppSettings badPriority = SettingsStore.ParseSettings(
+                "{\"ui\":{\"segments\":[{\"id\":\"git\",\"priority\":\"abc\"}]}}",
+                out root,
+                out error);
+            Check(
+                "非法 priority 回落 0 且不抛异常",
+                error == null
+                    && badPriority.Ui.FindSegment("git") != null
+                    && badPriority.Ui.FindSegment("git").Priority == 0,
+                error == null
+                    ? badPriority.Ui.GetSegmentPriority("git", -1)
+                        .ToString(CultureInfo.InvariantCulture)
+                    : error);
         }
 
         /// <summary>
