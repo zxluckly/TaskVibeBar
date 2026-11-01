@@ -22,6 +22,25 @@ namespace VibeBar
         private const int ErrorFileNotFound = 2;
         private const int OriginalStatusLineTimeoutMilliseconds = 2000;
 
+        // 外部段（--segment*）与 Hook 路径完全独立：管道名与 SegmentProtocol 保持一致，
+        // 但 CLI 只引用 System/System.Core，不能编译 SegmentProtocol.cs（它依赖 Json.cs）。
+        private const string SegmentPipeName = "VibeBar.Segment.v1";
+        private const int SegmentTimeoutMilliseconds = 1200;
+        private const int SegmentExitOk = 0;
+        private const int SegmentExitUsage = 2;
+        private const int SegmentExitUnavailable = 3;
+        private const int SegmentExitRejected = 4;
+        private const string SegmentUnavailableMessage = "VibeBar 未运行或未启用外部段";
+
+        private static readonly string SegmentUsageText =
+            "用法：\r\n"
+            + "  VibeBar.Cli.exe --segment id=<id> [text=<文本>] [label=<前缀>] [tooltip=<提示>]\r\n"
+            + "                  [color=<neutral|accent|warning|critical|success|waiting>]\r\n"
+            + "                  [url=<链接>] [priority=<0-1000>] [ttl=<5-3600>] [detail=<行1|行2>]\r\n"
+            + "                  [--verbose]\r\n"
+            + "  VibeBar.Cli.exe --segment-remove id=<id> [--verbose]\r\n"
+            + "  VibeBar.Cli.exe --segment-clear id=<前缀> [--verbose]\r\n";
+
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool WaitNamedPipe(string lpNamedPipeName, int nTimeOut);
@@ -45,6 +64,13 @@ namespace VibeBar
             if (args == null || args.Length == 0)
             {
                 return 0;
+            }
+
+            // --segment* 必须在 hook/statusline 判断之前路由，且自己返回 2/3/4，
+            // 不能落到 Main 外层的 catch { return 0; }，否则脚本会误判成功。
+            if (SegmentCliArgs.IsSegmentArgument(args))
+            {
+                return RunSegment(args);
             }
 
             bool isHook = string.Equals(
@@ -84,6 +110,222 @@ namespace VibeBar
             Diag("statusline sent");
             PassThroughOriginalStatusLine(payload);
             return 0;
+        }
+
+        /// <summary>
+        /// --segment / --segment-remove / --segment-clear：推一帧到 VibeBar.Segment.v1。
+        /// 成功静默返回 0；参数错误 2；管道不可用 3；服务端拒绝或回复超时 4。
+        /// 异常在本方法内消化，不依赖 Main 外层的 catch（那会返回 0）。
+        /// </summary>
+        private static int RunSegment(string[] args)
+        {
+            try
+            {
+                SegmentCliArgs parsed;
+                if (!SegmentCliArgs.TryParse(args, out parsed) || parsed == null)
+                {
+                    return SegmentExitOk;
+                }
+
+                if (!string.IsNullOrEmpty(parsed.Error))
+                {
+                    WriteSegmentText("参数错误：" + parsed.Error, true);
+                    WriteSegmentText(SegmentUsageText, true);
+                    return SegmentExitUsage;
+                }
+
+                return SendSegmentFrame(parsed);
+            }
+            catch (Exception exception)
+            {
+                WriteSegmentText("发送失败：" + exception.GetType().Name, true);
+                return SegmentExitRejected;
+            }
+        }
+
+        private static int SendSegmentFrame(SegmentCliArgs parsed)
+        {
+            string frame = parsed.BuildFrameJson();
+            byte[] bytes = new UTF8Encoding(false).GetBytes(frame + "\n");
+            string reply;
+
+            NamedPipeClientStream client = null;
+            try
+            {
+                client = new NamedPipeClientStream(
+                    ".",
+                    SegmentPipeName,
+                    PipeDirection.InOut,
+                    PipeOptions.None);
+
+                try
+                {
+                    client.Connect(SegmentTimeoutMilliseconds);
+                }
+                catch (TimeoutException)
+                {
+                    WriteSegmentText(SegmentUnavailableMessage, true);
+                    return SegmentExitUnavailable;
+                }
+                catch (IOException)
+                {
+                    WriteSegmentText(SegmentUnavailableMessage, true);
+                    return SegmentExitUnavailable;
+                }
+
+                client.Write(bytes, 0, bytes.Length);
+                client.Flush();
+
+                try
+                {
+                    reply = ReadSegmentReply(client);
+                }
+                catch (TimeoutException)
+                {
+                    WriteSegmentText("等待服务端回复超时（timeout）", true);
+                    return SegmentExitRejected;
+                }
+            }
+            catch (IOException)
+            {
+                WriteSegmentText(SegmentUnavailableMessage, true);
+                return SegmentExitUnavailable;
+            }
+            finally
+            {
+                if (client != null)
+                {
+                    try
+                    {
+                        client.Dispose();
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+
+            if (parsed.Verbose && !string.IsNullOrEmpty(reply))
+            {
+                WriteSegmentText(reply, false);
+            }
+
+            if (string.IsNullOrEmpty(reply))
+            {
+                WriteSegmentText("服务端未返回回复（empty_reply）", true);
+                return SegmentExitRejected;
+            }
+
+            if (reply.IndexOf("\"ok\":true", StringComparison.Ordinal) >= 0)
+            {
+                return SegmentExitOk;
+            }
+
+            string error = ExtractReplyError(reply);
+            WriteSegmentText(
+                string.IsNullOrEmpty(error) ? "服务端拒绝：invalid_reply" : error,
+                true);
+            return SegmentExitRejected;
+        }
+
+        /// <summary>
+        /// 读一行回复，最多等 SegmentTimeoutMilliseconds；超时抛 TimeoutException。
+        /// </summary>
+        private static string ReadSegmentReply(Stream stream)
+        {
+            byte[] buffer = new byte[512];
+            int total = 0;
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(SegmentTimeoutMilliseconds);
+
+            while (total < buffer.Length)
+            {
+                int remaining = (int)(deadline - DateTime.UtcNow).TotalMilliseconds;
+                if (remaining <= 0)
+                {
+                    throw new TimeoutException();
+                }
+
+                Task<int> readTask = stream.ReadAsync(buffer, total, buffer.Length - total);
+                try
+                {
+                    if (!readTask.Wait(remaining))
+                    {
+                        throw new TimeoutException();
+                    }
+                }
+                catch (AggregateException exception)
+                {
+                    throw exception.GetBaseException();
+                }
+
+                int read = readTask.Result;
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                total += read;
+                if (buffer[total - 1] == (byte)'\n')
+                {
+                    break;
+                }
+            }
+
+            if (total <= 0)
+            {
+                return null;
+            }
+
+            string text = Encoding.UTF8.GetString(buffer, 0, total).Trim();
+            return text.Length == 0 ? null : text;
+        }
+
+        private static string ExtractReplyError(string reply)
+        {
+            const string marker = "\"error\":\"";
+            int start = reply.IndexOf(marker, StringComparison.Ordinal);
+            if (start < 0)
+            {
+                return null;
+            }
+
+            start += marker.Length;
+            int end = reply.IndexOf('"', start);
+            if (end <= start)
+            {
+                return null;
+            }
+
+            return reply.Substring(start, end - start);
+        }
+
+        /// <summary>
+        /// 写一行到 stdout/stderr，沿用控制台代码页（Windows 脚本捕获时不会乱码）。
+        /// 写失败（管道已关闭等）时忽略，不能让输出问题影响退出码。
+        /// </summary>
+        private static void WriteSegmentText(string message, bool toError)
+        {
+            if (message == null)
+            {
+                return;
+            }
+
+            try
+            {
+                if (toError)
+                {
+                    Console.Error.WriteLine(message);
+                    Console.Error.Flush();
+                }
+                else
+                {
+                    Console.Out.WriteLine(message);
+                    Console.Out.Flush();
+                }
+            }
+            catch
+            {
+            }
         }
 
         private static void SendToPipe(string payload, string kind)

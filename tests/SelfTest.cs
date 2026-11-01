@@ -32,6 +32,7 @@ namespace VibeBar
             TestCustomOutput();
             TestCustomCommandRun();
             TestSegmentProtocol();
+            TestSegmentCliArgs();
             TestExternalSegment();
 
             Console.WriteLine();
@@ -629,6 +630,203 @@ namespace VibeBar
                 "空 text 是合法帧（隐藏语义）",
                 ok && frame.Text.Length == 0,
                 error == null ? "text 非空" : error);
+        }
+
+        /// <summary>
+        /// --segment* 参数解析与帧生成（CLI 侧），重点验证生成的帧能被
+        /// SegmentProtocol.TryParse 解析，两端协议对得上。
+        /// </summary>
+        private static void TestSegmentCliArgs()
+        {
+            SegmentCliArgs set = ParseSegmentArgs(
+                "--segment",
+                "id=demo.cli",
+                "text=hello",
+                "ttl=60");
+            Check(
+                "CLI set 解析 op",
+                set != null && set.Op == "set" && set.Error == null,
+                DescribeSegmentArgs(set));
+            Check(
+                "CLI set 解析 id/text",
+                set != null && set.Id == "demo.cli" && set.Text == "hello",
+                DescribeSegmentArgs(set));
+            Check(
+                "CLI 未指定 priority 为 -1",
+                set != null && set.Priority == -1,
+                set == null ? "null" : set.Priority.ToString(CultureInfo.InvariantCulture));
+            Check(
+                "CLI 解析 ttl",
+                set != null && set.Ttl == 60,
+                set == null ? "null" : set.Ttl.ToString(CultureInfo.InvariantCulture));
+
+            SegmentCliArgs remove = ParseSegmentArgs("--segment-remove", "id=demo.cli");
+            Check(
+                "CLI --segment-remove 解析为 remove",
+                remove != null && remove.Op == "remove" && remove.Error == null,
+                DescribeSegmentArgs(remove));
+
+            SegmentCliArgs clear = ParseSegmentArgs("--segment-clear", "id=demo");
+            Check(
+                "CLI --segment-clear 解析为 clear",
+                clear != null && clear.Op == "clear" && clear.Error == null,
+                DescribeSegmentArgs(clear));
+
+            SegmentCliArgs upper = ParseSegmentArgs("--SEGMENT", "id=a", "text=b");
+            Check(
+                "CLI 子命令大小写不敏感",
+                upper != null && upper.Op == "set",
+                DescribeSegmentArgs(upper));
+
+            SegmentCliArgs noId = ParseSegmentArgs("--segment", "text=b");
+            Check(
+                "CLI 缺 id 报 missing_id",
+                noId != null && noId.Error == "missing_id",
+                DescribeSegmentArgs(noId));
+
+            SegmentCliArgs noText = ParseSegmentArgs("--segment", "id=a");
+            Check(
+                "CLI set 缺 text 报 missing_text",
+                noText != null && noText.Error == "missing_text",
+                DescribeSegmentArgs(noText));
+
+            SegmentCliArgs unknownKey = ParseSegmentArgs(
+                "--segment",
+                "id=a",
+                "text=b",
+                "foo=1");
+            Check(
+                "CLI 未知 key 报 unknown_key:foo",
+                unknownKey != null && unknownKey.Error == "unknown_key:foo",
+                DescribeSegmentArgs(unknownKey));
+
+            SegmentCliArgs badNumber = ParseSegmentArgs(
+                "--segment",
+                "id=a",
+                "text=b",
+                "ttl=abc");
+            Check(
+                "CLI 非数字 ttl 报 invalid_number:ttl",
+                badNumber != null && badNumber.Error == "invalid_number:ttl",
+                DescribeSegmentArgs(badNumber));
+
+            SegmentCliArgs detail = ParseSegmentArgs(
+                "--segment",
+                "id=a",
+                "text=b",
+                "detail=第一行|第二行|第三行");
+            Check(
+                "CLI detail 拆成 3 行",
+                detail != null && detail.Detail != null
+                    && detail.Detail.Length == 3
+                    && detail.Detail[2] == "第三行",
+                detail == null ? "null" : Join(detail.Detail));
+
+            SegmentCliArgs detailOverflow = ParseSegmentArgs(
+                "--segment",
+                "id=a",
+                "text=b",
+                "detail=1|2|3|4|5|6|7|8|9|10");
+            Check(
+                "CLI detail 超过 8 行截断",
+                detailOverflow != null && detailOverflow.Detail != null
+                    && detailOverflow.Detail.Length == 8,
+                detailOverflow == null
+                    ? "null"
+                    : detailOverflow.Detail.Length.ToString(CultureInfo.InvariantCulture));
+
+            SegmentCliArgs verbose = ParseSegmentArgs(
+                "--segment",
+                "--verbose",
+                "id=a",
+                "text=b");
+            Check(
+                "CLI --verbose 可在任意位置",
+                verbose != null && verbose.Verbose,
+                DescribeSegmentArgs(verbose));
+
+            SegmentCliArgs notSegment;
+            Check(
+                "CLI 非 --segment* 返回 false",
+                !SegmentCliArgs.TryParse(new string[] { "--hook" }, out notSegment)
+                    && notSegment == null,
+                "TryParse 返回了 true");
+
+            // 帧生成：引号 / 反斜杠 / 换行 / 制表符都要转义，
+            // 且生成结果必须能被服务端 SegmentProtocol.TryParse 解析。
+            SegmentCliArgs tricky = ParseSegmentArgs(
+                "--segment",
+                "id=demo.json",
+                "text=a\"b\\c\r\nd\te",
+                "label=构建",
+                "color=success",
+                "priority=70",
+                "ttl=60",
+                "detail=x|y");
+            string frameJson = tricky == null ? null : tricky.BuildFrameJson();
+            Check(
+                "CLI 帧为单行（无裸换行）",
+                frameJson != null
+                    && frameJson.IndexOf('\n') < 0
+                    && frameJson.IndexOf('\r') < 0,
+                frameJson == null ? "null" : frameJson);
+            Check(
+                "CLI 帧含转义引号与反斜杠",
+                frameJson != null
+                    && frameJson.IndexOf("\\\"", StringComparison.Ordinal) >= 0
+                    && frameJson.IndexOf("\\\\", StringComparison.Ordinal) >= 0,
+                frameJson == null ? "null" : frameJson);
+
+            ExternalSegmentFrame parsedFrame = null;
+            string frameError = "null-frame";
+            bool frameOk = frameJson != null
+                && SegmentProtocol.TryParse(frameJson, 30, out parsedFrame, out frameError);
+            Check("CLI 帧可被 SegmentProtocol 解析", frameOk, frameError);
+            Check(
+                "CLI 帧文本转义后还原一致",
+                frameOk && parsedFrame.Text == "a\"b\\c de",
+                frameOk ? parsedFrame.Text : frameError);
+            Check(
+                "CLI 帧保留 label/priority/ttl/detail",
+                frameOk
+                    && parsedFrame.Label == "构建"
+                    && parsedFrame.Priority == 70
+                    && parsedFrame.TtlSeconds == 60
+                    && parsedFrame.Detail.Length == 2,
+                frameOk ? parsedFrame.Label : frameError);
+
+            string removeJson = remove == null ? null : remove.BuildFrameJson();
+            ExternalSegmentFrame removeFrame = null;
+            string removeError = "null-frame";
+            bool removeOk = removeJson != null
+                && SegmentProtocol.TryParse(removeJson, 30, out removeFrame, out removeError);
+            Check(
+                "CLI remove 帧不带 text 且可解析",
+                removeOk
+                    && removeFrame.Op == "remove"
+                    && removeJson.IndexOf("\"text\"", StringComparison.Ordinal) < 0,
+                removeOk ? removeJson : removeError);
+        }
+
+        private static SegmentCliArgs ParseSegmentArgs(params string[] args)
+        {
+            SegmentCliArgs result;
+            if (!SegmentCliArgs.TryParse(args, out result))
+            {
+                return null;
+            }
+
+            return result;
+        }
+
+        private static string DescribeSegmentArgs(SegmentCliArgs args)
+        {
+            if (args == null)
+            {
+                return "null";
+            }
+
+            return "op=" + args.Op + " id=" + args.Id + " error=" + args.Error;
         }
 
         /// <summary>

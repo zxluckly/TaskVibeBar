@@ -36,7 +36,7 @@ if errorlevel 1 goto :build_failed
 echo [OK] %OUT%\VibeBar.exe
 
 echo [BUILD] Compiling bin\VibeBar.Cli.exe
-"%CSC%" /nologo /codepage:65001 /utf8output /target:exe /platform:anycpu /optimize+ /out:"%OUT%\VibeBar.Cli.exe" /r:System.dll /r:System.Core.dll "%SRC%\Cli\CliMain.cs" "%SRC%\EventBus\EventProtocol.cs"
+"%CSC%" /nologo /codepage:65001 /utf8output /target:exe /platform:anycpu /optimize+ /out:"%OUT%\VibeBar.Cli.exe" /r:System.dll /r:System.Core.dll "%SRC%\Cli\CliMain.cs" "%SRC%\Cli\SegmentCliArgs.cs" "%SRC%\EventBus\EventProtocol.cs"
 if errorlevel 1 goto :build_failed
 
 echo [OK] %OUT%\VibeBar.Cli.exe

@@ -52,6 +52,12 @@ bin\VibeBar.Cli.exe
 
 `VibeBar.Cli.exe` 仅供 Claude Code Hooks 调用，不依赖 WPF，也不需要手动运行。
 
+推送一个外部段（成功静默，退出码 0/2/3/4，示例见 [`examples/README.md`](examples/README.md)）：
+
+```bat
+bin\VibeBar.Cli.exe --segment id=demo.ps text="来自脚本" label=演示 color=accent ttl=60
+```
+
 ## 运行
 
 双击 `bin\VibeBar.exe`。程序为单实例；再次启动只提示“已在运行”。
