@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Drawing = System.Drawing;
 using Forms = System.Windows.Forms;
 
@@ -43,6 +44,16 @@ namespace VibeBar
         private readonly TextBlock _hoverOpacityLabel;
         private readonly Border _hoverPreview;
         private readonly TextBlock _hookStatusText;
+
+        // 扩展段：关注端口 / 端口与 PR 刷新间隔 / 自定义命令。
+        private readonly TextBox _portsBox;
+        private readonly ComboBox _portIntervalBox;
+        private readonly ComboBox _prIntervalBox;
+        private readonly CustomCommandEditor _commandEditor;
+        private readonly TextBlock _validationText;
+        private readonly DispatcherTimer _validationTimer;
+        private Border _actionBarBorder;
+
         private StackPanel _rootPanel;
         private Drawing.Rectangle _targetWork = Drawing.Rectangle.Empty;
         private bool _placementHooked;
@@ -268,14 +279,71 @@ namespace VibeBar
             _hookStatusText.Opacity = 0.85;
             RefreshHookStatus();
 
+            _portsBox = new TextBox();
+            _portsBox.Height = 58;
+            _portsBox.AcceptsReturn = true;
+            _portsBox.TextWrapping = TextWrapping.Wrap;
+            _portsBox.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+            _portsBox.Padding = new Thickness(6, 4, 6, 4);
+            _portsBox.VerticalAlignment = VerticalAlignment.Top;
+            _portsBox.Text = SettingsValidation.FormatPorts(settings.Ports.WatchPorts);
+            _portsBox.TextChanged += delegate { ClearValidationError(); };
+
+            _portIntervalBox = CreateSecondsCombo(
+                new int[] { 3, 5, 10, 30 },
+                settings.Ports.PollSeconds,
+                5);
+
+            _prIntervalBox = CreateSecondsCombo(
+                new int[] { 30, 60, 120, 300 },
+                settings.Pr.PollSeconds,
+                60);
+
+            _commandEditor = new CustomCommandEditor(settings.Custom.Commands);
+
+            _validationText = new TextBlock();
+            _validationText.Foreground =
+                new SolidColorBrush(UiTheme.RoleColor(ColorRole.Critical));
+            _validationText.TextWrapping = TextWrapping.Wrap;
+            _validationText.FontSize = 12;
+            _validationText.Margin = new Thickness(0, 0, 0, 0);
+            _validationText.Visibility = Visibility.Collapsed;
+
+            _validationTimer = new DispatcherTimer();
+            _validationTimer.Interval = TimeSpan.FromSeconds(3);
+            _validationTimer.Tick += delegate
+            {
+                _validationTimer.Stop();
+                ClearValidationError();
+            };
+
             ScrollViewer scroll = new ScrollViewer();
             scroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
             scroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
             scroll.Content = BuildLayout();
-            scroll.MaxHeight = Math.Max(
-                360.0,
-                SystemParameters.WorkArea.Height - 120.0);
-            Content = scroll;
+
+            // 内容区可滚动，操作栏固定在底部：内容再长也不用滚才能点到「保存」。
+            Grid shell = new Grid();
+            RowDefinition contentRow = new RowDefinition();
+            contentRow.Height = new GridLength(1, GridUnitType.Star);
+            RowDefinition actionRow = new RowDefinition();
+            actionRow.Height = GridLength.Auto;
+            shell.RowDefinitions.Add(contentRow);
+            shell.RowDefinitions.Add(actionRow);
+
+            Grid.SetRow(scroll, 0);
+            shell.Children.Add(scroll);
+
+            FrameworkElement actionBar = BuildActionBar();
+            Grid.SetRow(actionBar, 1);
+            shell.Children.Add(actionBar);
+
+            Content = shell;
+
+            // 高度封顶：内容超高时只压缩滚动区，操作栏始终留在可见范围内。
+            double workAreaHeight = SystemParameters.WorkArea.Height;
+            MaxHeight = Math.Max(420.0, workAreaHeight - 40.0);
+            scroll.MaxHeight = Math.Max(320.0, workAreaHeight - 220.0);
 
             // 主题可能在设置窗口打开期间切换（系统深浅色），统一在窗口级重刷。
             Theme.Changed += OnThemeChanged;
@@ -342,8 +410,9 @@ namespace VibeBar
         /// ComboBox 的默认模板用写死的浅色渐变绘制，深色主题下会出现
         /// 「白底浅灰字」。这里用代码构建一个跟随主题的最小模板：
         /// 边框 + 选中项文字 + ▾ + 下拉列表。
+        /// internal static：自定义命令编辑器复用同一套模板，避免两份实现漂移。
         /// </summary>
-        private ControlTemplate CreateComboBoxTemplate()
+        internal static ControlTemplate CreateComboBoxTemplate()
         {
             ControlTemplate template = new ControlTemplate(typeof(ComboBox));
 
@@ -480,7 +549,7 @@ namespace VibeBar
         /// CheckBox 的默认模板同样写死浅色方框，深色主题下会露出白块。
         /// 这里换成「方框 + 勾 + 文字」的最小模板，颜色全部跟随主题。
         /// </summary>
-        private static ControlTemplate CreateCheckBoxTemplate()
+        internal static ControlTemplate CreateCheckBoxTemplate()
         {
             ControlTemplate template = new ControlTemplate(typeof(CheckBox));
 
@@ -538,11 +607,105 @@ namespace VibeBar
             return template;
         }
 
-        private static void ApplyCheckTheme(CheckBox box)
+        internal static void ApplyCheckTheme(CheckBox box)
         {
             box.Foreground = new SolidColorBrush(UiTheme.AppTextPrimary);
             box.Background = new SolidColorBrush(UiTheme.InputBackground);
             box.BorderBrush = new SolidColorBrush(UiTheme.InputBorder);
+        }
+
+        /// <summary>
+        /// 按启用状态给按钮取色。默认 Button 模板在禁用时回落到系统画刷
+        /// （深色主题下是白底），所以按钮必须同时换上 CreateButtonTemplate() 的模板。
+        /// </summary>
+        internal static void ApplyButtonTheme(Button button)
+        {
+            if (button == null)
+            {
+                return;
+            }
+
+            bool enabled = button.IsEnabled;
+            button.Background = new SolidColorBrush(
+                enabled ? UiTheme.ButtonSurface : UiTheme.InputBackground);
+            button.Foreground = new SolidColorBrush(
+                enabled ? UiTheme.AppTextPrimary : UiTheme.TextDisabled);
+            button.BorderBrush = new SolidColorBrush(UiTheme.InputBorder);
+            button.BorderThickness = new Thickness(1);
+        }
+
+        /// <summary>
+        /// 代码构建的按钮模板：Border + ContentPresenter，颜色全部走 TemplateBinding，
+        /// 禁用态由 Trigger 显式指定（不再落到系统白底）。写法参考 DetailPanel。
+        /// </summary>
+        internal static ControlTemplate CreateButtonTemplate()
+        {
+            ControlTemplate template = new ControlTemplate(typeof(Button));
+
+            FrameworkElementFactory border = new FrameworkElementFactory(typeof(Border));
+            border.Name = "Chrome";
+            border.SetValue(Border.CornerRadiusProperty, new CornerRadius(6));
+            border.SetValue(
+                Border.BackgroundProperty,
+                new TemplateBindingExtension(Control.BackgroundProperty));
+            border.SetValue(
+                Border.BorderBrushProperty,
+                new TemplateBindingExtension(Control.BorderBrushProperty));
+            border.SetValue(
+                Border.BorderThicknessProperty,
+                new TemplateBindingExtension(Control.BorderThicknessProperty));
+            border.SetValue(Border.SnapsToDevicePixelsProperty, true);
+
+            FrameworkElementFactory presenter =
+                new FrameworkElementFactory(typeof(ContentPresenter));
+            presenter.SetValue(
+                FrameworkElement.HorizontalAlignmentProperty,
+                HorizontalAlignment.Center);
+            presenter.SetValue(
+                FrameworkElement.VerticalAlignmentProperty,
+                VerticalAlignment.Center);
+            presenter.SetValue(
+                FrameworkElement.MarginProperty,
+                new TemplateBindingExtension(Control.PaddingProperty));
+            border.AppendChild(presenter);
+
+            template.VisualTree = border;
+
+            Trigger hoverTrigger = new Trigger();
+            hoverTrigger.Property = UIElement.IsMouseOverProperty;
+            hoverTrigger.Value = true;
+            hoverTrigger.Setters.Add(new Setter(
+                Border.BackgroundProperty,
+                new SolidColorBrush(UiTheme.ButtonHover),
+                "Chrome"));
+            template.Triggers.Add(hoverTrigger);
+
+            Trigger pressedTrigger = new Trigger();
+            pressedTrigger.Property = ButtonBase.IsPressedProperty;
+            pressedTrigger.Value = true;
+            pressedTrigger.Setters.Add(new Setter(
+                Border.BackgroundProperty,
+                new SolidColorBrush(UiTheme.ButtonPressed),
+                "Chrome"));
+            template.Triggers.Add(pressedTrigger);
+
+            // 放最后：禁用时压掉悬停/按下，避免深色下出现浅色块。
+            Trigger disabledTrigger = new Trigger();
+            disabledTrigger.Property = UIElement.IsEnabledProperty;
+            disabledTrigger.Value = false;
+            disabledTrigger.Setters.Add(new Setter(
+                Border.BackgroundProperty,
+                new SolidColorBrush(UiTheme.InputBackground),
+                "Chrome"));
+            disabledTrigger.Setters.Add(new Setter(
+                Control.ForegroundProperty,
+                new SolidColorBrush(UiTheme.TextDisabled)));
+            disabledTrigger.Setters.Add(new Setter(
+                Control.BorderBrushProperty,
+                new SolidColorBrush(UiTheme.InputBorder)));
+            template.Triggers.Add(disabledTrigger);
+
+            return template;
         }
 
         private void StyleCheckBoxes()
@@ -613,6 +776,26 @@ namespace VibeBar
                 new SolidColorBrush(UiTheme.AppTextPrimary);
 
             ThemeElement(_rootPanel);
+
+            // 操作栏不在 _rootPanel 里（它固定在滚动区之外），单独刷一遍。
+            ThemeElement(_actionBarBorder);
+            if (_actionBarBorder != null)
+            {
+                _actionBarBorder.BorderBrush = new SolidColorBrush(UiTheme.Separator);
+            }
+
+            // 校验错误文案固定用 Critical 色，不能被 TextBlock 的通用配色覆盖。
+            if (_validationText != null)
+            {
+                _validationText.Foreground =
+                    new SolidColorBrush(UiTheme.RoleColor(ColorRole.Critical));
+            }
+
+            if (_commandEditor != null)
+            {
+                _commandEditor.ApplyTheme();
+            }
+
             UpdateHoverPreview();
         }
 
@@ -666,10 +849,27 @@ namespace VibeBar
             }
             else if (element is Button)
             {
-                Control button = (Control)element;
-                button.Background = new SolidColorBrush(UiTheme.ButtonSurface);
-                button.Foreground = new SolidColorBrush(UiTheme.AppTextPrimary);
-                button.BorderBrush = new SolidColorBrush(UiTheme.InputBorder);
+                // 默认 Button 模板在 IsEnabled=false 时用系统画刷，深色下会变成白块；
+                // 统一换成代码构建的模板，按启用状态显式取色。
+                Button button = (Button)element;
+                button.Template = CreateButtonTemplate();
+                ApplyButtonTheme(button);
+            }
+            else if (element is ListBox)
+            {
+                // ListBox 默认模板在深色下是白底黑字，必须显式上色。
+                ListBox list = (ListBox)element;
+                list.Background = new SolidColorBrush(UiTheme.InputBackground);
+                list.Foreground = new SolidColorBrush(UiTheme.AppTextPrimary);
+                list.BorderBrush = new SolidColorBrush(UiTheme.InputBorder);
+            }
+            else if (element is ListBoxItem)
+            {
+                // 选中项的高亮由 ListBoxItem 模板的 Trigger 用 Accent 绘制。
+                ListBoxItem item = (ListBoxItem)element;
+                item.Background = new SolidColorBrush(UiTheme.InputBackground);
+                item.Foreground = new SolidColorBrush(UiTheme.AppTextPrimary);
+                item.BorderBrush = new SolidColorBrush(UiTheme.InputBorder);
             }
 
             Panel panel = element as Panel;
@@ -808,12 +1008,45 @@ namespace VibeBar
             AddHint(root, "颜色留空或勾选「跟随系统主题色」时使用主题色；透明度 0% 表示悬停也不显示背景。");
 
             AddLabel(root, "扩展段（端口 / PR / 自定义命令）");
+            AddHint(root, "端口段与 PR 段默认关闭，可在上方「显示模块」中开启。");
             AddHint(
                 root,
-                "端口段与 PR 段默认关闭，可在上方「显示模块」中开启。"
-                + "关注端口 ports.watchPorts、PR 刷新间隔 pr.pollSeconds、"
-                + "自定义命令 custom.commands 都在 settings.json 中配置；"
-                + "修改后需重启 VibeBar（不要在保存设置前手工改文件）。");
+                "改完点「保存」立即生效，无需重启；也可以直接编辑 settings.json（会自动热重载）。");
+
+            AddLabel(root, "关注端口");
+            Grid portsRow = new Grid();
+            ColumnDefinition portsColumn = new ColumnDefinition();
+            portsColumn.Width = new GridLength(1, GridUnitType.Star);
+            ColumnDefinition resetColumn = new ColumnDefinition();
+            resetColumn.Width = GridLength.Auto;
+            portsRow.ColumnDefinitions.Add(portsColumn);
+            portsRow.ColumnDefinitions.Add(resetColumn);
+
+            Grid.SetColumn(_portsBox, 0);
+            portsRow.Children.Add(_portsBox);
+
+            Button resetPortsButton = new Button();
+            resetPortsButton.Content = "恢复默认";
+            resetPortsButton.Width = 86;
+            resetPortsButton.Height = 28;
+            resetPortsButton.Margin = new Thickness(8, 0, 0, 0);
+            resetPortsButton.VerticalAlignment = VerticalAlignment.Top;
+            resetPortsButton.Click += OnResetPorts;
+            Grid.SetColumn(resetPortsButton, 1);
+            portsRow.Children.Add(resetPortsButton);
+
+            root.Children.Add(portsRow);
+            AddHint(root, "逗号/空格/换行分隔；留空表示显示全部监听端口。");
+
+            AddLabel(root, "端口刷新间隔");
+            root.Children.Add(_portIntervalBox);
+
+            AddLabel(root, "PR 刷新间隔");
+            root.Children.Add(_prIntervalBox);
+
+            AddLabel(root, "自定义命令");
+            root.Children.Add(_commandEditor.Root);
+
             AddHint(
                 root,
                 "⚠ 自定义命令由你本人编写并在本机以 cmd 执行，效果等同于在命令行直接运行，"
@@ -865,9 +1098,23 @@ namespace VibeBar
 
             root.Children.Add(hookButtons);
 
+            return root;
+        }
+
+        /// <summary>
+        /// 窗口底部固定的操作栏：校验红字 + 保存/取消/打开数据目录。
+        /// 不放进 ScrollViewer，保证内容再长也能直接点到「保存」。
+        /// </summary>
+        private FrameworkElement BuildActionBar()
+        {
+            StackPanel stack = new StackPanel();
+
+            // 校验失败的红字在操作栏上方一行；3 秒后或下次编辑时自动消失。
+            stack.Children.Add(_validationText);
+
             StackPanel buttons = new StackPanel();
             buttons.Orientation = Orientation.Horizontal;
-            buttons.Margin = new Thickness(0, 20, 0, 0);
+            buttons.Margin = new Thickness(0, 6, 0, 0);
 
             Button saveButton = new Button();
             saveButton.Content = "保存";
@@ -893,8 +1140,15 @@ namespace VibeBar
             openFolderButton.Click += OnOpenDataFolder;
             buttons.Children.Add(openFolderButton);
 
-            root.Children.Add(buttons);
-            return root;
+            stack.Children.Add(buttons);
+
+            _actionBarBorder = new Border();
+            _actionBarBorder.BorderThickness = new Thickness(0, 1, 0, 0);
+            _actionBarBorder.BorderBrush = new SolidColorBrush(UiTheme.Separator);
+            _actionBarBorder.Padding = new Thickness(18, 10, 18, 12);
+            _actionBarBorder.Margin = new Thickness(0, 8, 0, 0);
+            _actionBarBorder.Child = stack;
+            return _actionBarBorder;
         }
 
         private void AddIntervalItem(int seconds)
@@ -945,6 +1199,115 @@ namespace VibeBar
             }
 
             return 60;
+        }
+
+        /// <summary>
+        /// 构建「N 秒」下拉框。settings.json 里手工写了列表外的值时补一项，
+        /// 避免只因为打开设置窗口就被悄悄改成候选值。
+        /// </summary>
+        private static ComboBox CreateSecondsCombo(int[] choices, int current, int fallback)
+        {
+            if (current <= 0)
+            {
+                current = fallback;
+            }
+
+            ComboBox combo = new ComboBox();
+            combo.Height = 30;
+            combo.Width = 160;
+            combo.HorizontalAlignment = HorizontalAlignment.Left;
+            combo.Template = CreateComboBoxTemplate();
+
+            bool matched = false;
+            for (int index = 0; index < choices.Length; index++)
+            {
+                AddSecondsItem(combo, choices[index]);
+                if (choices[index] == current)
+                {
+                    matched = true;
+                }
+            }
+
+            if (!matched)
+            {
+                AddSecondsItem(combo, current);
+            }
+
+            SelectSeconds(combo, current);
+            return combo;
+        }
+
+        private static void AddSecondsItem(ComboBox combo, int seconds)
+        {
+            ComboBoxItem item = new ComboBoxItem();
+            item.Content = seconds.ToString(CultureInfo.InvariantCulture) + " 秒";
+            item.Tag = seconds;
+            combo.Items.Add(item);
+        }
+
+        private static void SelectSeconds(ComboBox combo, int seconds)
+        {
+            for (int index = 0; index < combo.Items.Count; index++)
+            {
+                ComboBoxItem item = combo.Items[index] as ComboBoxItem;
+                if (item != null && item.Tag is int && (int)item.Tag == seconds)
+                {
+                    combo.SelectedIndex = index;
+                    return;
+                }
+            }
+
+            if (combo.Items.Count > 0)
+            {
+                combo.SelectedIndex = 0;
+            }
+        }
+
+        private static int GetSelectedSeconds(ComboBox combo, int fallback)
+        {
+            ComboBoxItem item = combo == null ? null : combo.SelectedItem as ComboBoxItem;
+            if (item != null && item.Tag is int)
+            {
+                return (int)item.Tag;
+            }
+
+            return fallback;
+        }
+
+        private void OnResetPorts(object sender, RoutedEventArgs e)
+        {
+            _portsBox.Text = SettingsValidation.FormatPorts(
+                PortsSettings.CreateDefaultWatchPorts());
+            ClearValidationError();
+        }
+
+        private void ShowValidationError(string error)
+        {
+            if (string.IsNullOrEmpty(error))
+            {
+                return;
+            }
+
+            _validationText.Text = error;
+            _validationText.Visibility = Visibility.Visible;
+            _validationTimer.Stop();
+            _validationTimer.Start();
+        }
+
+        private void ClearValidationError()
+        {
+            if (_validationTimer != null)
+            {
+                _validationTimer.Stop();
+            }
+
+            if (_validationText == null)
+            {
+                return;
+            }
+
+            _validationText.Text = string.Empty;
+            _validationText.Visibility = Visibility.Collapsed;
         }
 
         private void SelectMonitor(string monitor)
@@ -1379,6 +1742,27 @@ namespace VibeBar
 
         private void OnSave(object sender, RoutedEventArgs e)
         {
+            ClearValidationError();
+
+            // 扩展段：先校验关注端口与自定义命令，失败只在窗口内显示红字、不关闭窗口。
+            int[] ports;
+            string error;
+            if (!SettingsValidation.TryParsePorts(_portsBox.Text, out ports, out error))
+            {
+                ShowValidationError(error);
+                return;
+            }
+
+            if (!_commandEditor.TryCommit(out error))
+            {
+                ShowValidationError(error);
+                return;
+            }
+
+            _settings.Ports.WatchPorts = ports;
+            _settings.Ports.PollSeconds = GetSelectedSeconds(_portIntervalBox, 5);
+            _settings.Pr.PollSeconds = GetSelectedSeconds(_prIntervalBox, 60);
+
             string baseUrlText = _baseUrlBox.Text.Trim();
             Uri uri;
             if (baseUrlText.Length == 0

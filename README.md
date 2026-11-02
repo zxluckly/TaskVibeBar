@@ -82,6 +82,9 @@ bin\VibeBar.Cli.exe --segment id=demo.ps text="来自脚本" label=演示 color=
 
 `settings.json` 改完自动生效：保存后约 1 秒内热重载，无需重启；写入非法内容时保留上一次的有效配置（详见 `log.txt`）。设置窗口打开期间不热重载。
 
+关注端口、端口/PR 刷新间隔、自定义命令都可以在设置窗口里可视化编辑（「扩展段」一节），
+保存时先校验再写盘，校验不通过只在窗口内提示、不会写坏配置；也可以继续直接编辑 `settings.json`。
+
 `settings.json` 主要字段：
 
 ```json

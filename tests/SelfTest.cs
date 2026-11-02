@@ -22,6 +22,7 @@ namespace VibeBar
             Console.WriteLine("VibeBar 自测开始");
 
             TestSettingsNormalize();
+            TestSettingsValidation();
             TestSettingsReloadParse();
             TestSegmentSettingsParse();
             TestSettingsReloadDebounce();
@@ -1122,6 +1123,201 @@ namespace VibeBar
                 "external 缺失时默认开启",
                 new AppSettings().External.Enabled,
                 "Enabled=false");
+        }
+
+        /// <summary>
+        /// T18：设置窗口的端口解析与自定义命令校验（纯逻辑，可离线断言）。
+        /// </summary>
+        private static void TestSettingsValidation()
+        {
+            int[] ports;
+            string error;
+
+            bool ok = SettingsValidation.TryParsePorts("3000, 5173", out ports, out error);
+            Check(
+                "端口解析：逗号分隔",
+                ok && error == null && ports.Length == 2
+                    && ports[0] == 3000 && ports[1] == 5173,
+                error == null ? ports.Length.ToString(CultureInfo.InvariantCulture) : error);
+
+            ok = SettingsValidation.TryParsePorts("3000 5173\n8080", out ports, out error);
+            Check(
+                "端口解析：空格与换行分隔",
+                ok && ports.Length == 3 && ports[0] == 3000
+                    && ports[1] == 5173 && ports[2] == 8080,
+                error == null ? ports.Length.ToString(CultureInfo.InvariantCulture) : error);
+
+            ok = SettingsValidation.TryParsePorts("3000;5173", out ports, out error);
+            Check(
+                "端口解析：分号分隔",
+                ok && ports.Length == 2 && ports[1] == 5173,
+                error == null ? ports.Length.ToString(CultureInfo.InvariantCulture) : error);
+
+            ok = SettingsValidation.TryParsePorts(string.Empty, out ports, out error);
+            Check(
+                "端口解析：空串表示显示全部",
+                ok && error == null && ports.Length == 0,
+                error == null ? ports.Length.ToString(CultureInfo.InvariantCulture) : error);
+
+            ok = SettingsValidation.TryParsePorts("  \n\t ", out ports, out error);
+            Check(
+                "端口解析：全空白表示显示全部",
+                ok && error == null && ports.Length == 0,
+                error == null ? ports.Length.ToString(CultureInfo.InvariantCulture) : error);
+
+            ok = SettingsValidation.TryParsePorts("70000", out ports, out error);
+            Check(
+                "端口解析：超出上限报错且含原值",
+                !ok && error != null && error.IndexOf("70000", StringComparison.Ordinal) >= 0,
+                error);
+
+            ok = SettingsValidation.TryParsePorts("abc", out ports, out error);
+            Check(
+                "端口解析：非数字报错且含原值",
+                !ok && error != null && error.IndexOf("abc", StringComparison.Ordinal) >= 0,
+                error);
+
+            ok = SettingsValidation.TryParsePorts("0", out ports, out error);
+            Check(
+                "端口解析：0 报错",
+                !ok && error != null && error.IndexOf("0", StringComparison.Ordinal) >= 0,
+                error);
+
+            ok = SettingsValidation.TryParsePorts("3000,3000,5173", out ports, out error);
+            Check(
+                "端口解析：重复项去重且保序",
+                ok && ports.Length == 2 && ports[0] == 3000 && ports[1] == 5173,
+                error == null ? ports.Length.ToString(CultureInfo.InvariantCulture) : error);
+
+            StringBuilder many = new StringBuilder();
+            for (int index = 0; index < 21; index++)
+            {
+                if (index > 0)
+                {
+                    many.Append(",");
+                }
+
+                many.Append((1000 + index).ToString(CultureInfo.InvariantCulture));
+            }
+
+            ok = SettingsValidation.TryParsePorts(many.ToString(), out ports, out error);
+            Check(
+                "端口解析：超过 20 个报错",
+                !ok && error != null && error.IndexOf("20", StringComparison.Ordinal) >= 0,
+                error);
+
+            SettingsValidation.TryParsePorts("3000, 5173", out ports, out error);
+            string formatted = SettingsValidation.FormatPorts(ports);
+            int[] roundTrip;
+            ok = SettingsValidation.TryParsePorts(formatted, out roundTrip, out error);
+            Check(
+                "FormatPorts 往返一致",
+                string.Equals(formatted, "3000, 5173", StringComparison.Ordinal)
+                    && ok && roundTrip.Length == 2 && roundTrip[1] == 5173,
+                formatted);
+
+            Check(
+                "FormatPorts 空数组为空串",
+                string.Equals(
+                    SettingsValidation.FormatPorts(new int[0]),
+                    string.Empty,
+                    StringComparison.Ordinal),
+                SettingsValidation.FormatPorts(new int[0]));
+
+            List<CustomCommandSettings> commands = new List<CustomCommandSettings>();
+            commands.Add(CreateCommand("demo", "演示", "echo hi", 30, "text"));
+            Check(
+                "命令校验：合法列表通过",
+                SettingsValidation.ValidateCommands(commands, out error) && error == null,
+                error);
+
+            commands[0].Label = "一二三四五六七八九十十一十二十三";
+            Check(
+                "命令校验：标签超 12 字截断",
+                SettingsValidation.ValidateCommands(commands, out error)
+                    && commands[0].Label.Length == 12,
+                commands[0].Label);
+
+            List<CustomCommandSettings> emptyCommand = new List<CustomCommandSettings>();
+            emptyCommand.Add(CreateCommand("cmd1", string.Empty, "   ", 30, "text"));
+            ok = SettingsValidation.ValidateCommands(emptyCommand, out error);
+            Check(
+                "命令校验：空命令报错含序号",
+                !ok && error != null
+                    && error.IndexOf("第 1 条", StringComparison.Ordinal) >= 0
+                    && error.IndexOf("不能为空", StringComparison.Ordinal) >= 0,
+                error);
+
+            List<CustomCommandSettings> badId = new List<CustomCommandSettings>();
+            badId.Add(CreateCommand("cmd1", string.Empty, "echo hi", 30, "text"));
+            badId.Add(CreateCommand("Bad", string.Empty, "echo hi", 30, "text"));
+            ok = SettingsValidation.ValidateCommands(badId, out error);
+            Check(
+                "命令校验：非法 ID 报错含序号",
+                !ok && error != null
+                    && error.IndexOf("第 2 条", StringComparison.Ordinal) >= 0
+                    && error.IndexOf("ID", StringComparison.Ordinal) >= 0,
+                error);
+
+            List<CustomCommandSettings> duplicateId = new List<CustomCommandSettings>();
+            duplicateId.Add(CreateCommand("dup", string.Empty, "echo 1", 30, "text"));
+            duplicateId.Add(CreateCommand("dup", string.Empty, "echo 2", 30, "text"));
+            ok = SettingsValidation.ValidateCommands(duplicateId, out error);
+            Check(
+                "命令校验：重复 ID 报错",
+                !ok && error != null
+                    && error.IndexOf("第 2 条", StringComparison.Ordinal) >= 0
+                    && error.IndexOf("重复", StringComparison.Ordinal) >= 0,
+                error);
+
+            List<CustomCommandSettings> shortInterval = new List<CustomCommandSettings>();
+            shortInterval.Add(CreateCommand("cmd1", string.Empty, "echo hi", 5, "text"));
+            ok = SettingsValidation.ValidateCommands(shortInterval, out error);
+            Check(
+                "命令校验：间隔 5 报错（下限 10）",
+                !ok && error != null
+                    && error.IndexOf("第 1 条", StringComparison.Ordinal) >= 0
+                    && error.IndexOf("10-3600", StringComparison.Ordinal) >= 0,
+                error);
+
+            List<CustomCommandSettings> minInterval = new List<CustomCommandSettings>();
+            minInterval.Add(CreateCommand("cmd1", string.Empty, "echo hi", 10, "text"));
+            Check(
+                "命令校验：间隔 10 为合法下界",
+                SettingsValidation.ValidateCommands(minInterval, out error) && error == null,
+                error);
+
+            List<CustomCommandSettings> badFormat = new List<CustomCommandSettings>();
+            badFormat.Add(CreateCommand("cmd1", string.Empty, "echo hi", 30, "xml"));
+            ok = SettingsValidation.ValidateCommands(badFormat, out error);
+            Check(
+                "命令校验：格式 xml 报错",
+                !ok && error != null
+                    && error.IndexOf("第 1 条", StringComparison.Ordinal) >= 0
+                    && error.IndexOf("text 或 json", StringComparison.Ordinal) >= 0,
+                error);
+
+            List<CustomCommandSettings> nullList = null;
+            Check(
+                "命令校验：空列表通过",
+                SettingsValidation.ValidateCommands(nullList, out error) && error == null,
+                error);
+        }
+
+        private static CustomCommandSettings CreateCommand(
+            string id,
+            string label,
+            string command,
+            int intervalSeconds,
+            string format)
+        {
+            CustomCommandSettings settings = new CustomCommandSettings();
+            settings.Id = id;
+            settings.Label = label;
+            settings.Command = command;
+            settings.IntervalSeconds = intervalSeconds;
+            settings.Format = format;
+            return settings;
         }
 
         /// <summary>
