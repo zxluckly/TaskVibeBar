@@ -23,6 +23,7 @@ namespace VibeBar
 
             TestSettingsNormalize();
             TestSettingsValidation();
+            TestExternalSettingsValidation();
             TestSettingsReloadParse();
             TestSegmentSettingsParse();
             TestSettingsReloadDebounce();
@@ -1302,6 +1303,117 @@ namespace VibeBar
                 "命令校验：空列表通过",
                 SettingsValidation.ValidateCommands(nullList, out error) && error == null,
                 error);
+        }
+
+        /// <summary>
+        /// T19：外部段（插件）配置的范围校验。文案必须是可直接展示的中文。
+        /// </summary>
+        private static void TestExternalSettingsValidation()
+        {
+            int value;
+            string error;
+
+            bool ok = SettingsValidation.TryParseExternalMaxSegments("16", out value, out error);
+            Check(
+                "外部段最大段数：16 通过",
+                ok && error == null && value == 16,
+                error == null ? value.ToString(CultureInfo.InvariantCulture) : error);
+
+            ok = SettingsValidation.TryParseExternalMaxSegments(" 8 ", out value, out error);
+            Check(
+                "外部段最大段数：首尾空白被去掉",
+                ok && error == null && value == 8,
+                error == null ? value.ToString(CultureInfo.InvariantCulture) : error);
+
+            ok = SettingsValidation.TryParseExternalMaxSegments("0", out value, out error);
+            Check(
+                "外部段最大段数：0 报错含 1-32",
+                !ok && error != null && error.IndexOf("1-32", StringComparison.Ordinal) >= 0,
+                error);
+
+            ok = SettingsValidation.TryParseExternalMaxSegments("33", out value, out error);
+            Check(
+                "外部段最大段数：33 报错含 1-32",
+                !ok && error != null && error.IndexOf("1-32", StringComparison.Ordinal) >= 0,
+                error);
+
+            ok = SettingsValidation.TryParseExternalMaxSegments("abc", out value, out error);
+            Check(
+                "外部段最大段数：abc 报错含字段名",
+                !ok && error != null
+                    && error.IndexOf("最大段数", StringComparison.Ordinal) >= 0,
+                error);
+
+            ok = SettingsValidation.TryParseExternalMaxSegments(string.Empty, out value, out error);
+            Check(
+                "外部段最大段数：空串报错",
+                !ok && error != null && error.IndexOf("1-32", StringComparison.Ordinal) >= 0,
+                error);
+
+            ok = SettingsValidation.TryParseExternalMaxSegments("1", out value, out error);
+            bool upperOk = SettingsValidation.TryParseExternalMaxSegments("32", out value, out error);
+            Check(
+                "外部段最大段数：边界 1 与 32 通过",
+                ok && upperOk,
+                error);
+
+            ok = SettingsValidation.TryParseExternalTtl("30", out value, out error);
+            Check(
+                "外部段默认存活：30 通过",
+                ok && error == null && value == 30,
+                error == null ? value.ToString(CultureInfo.InvariantCulture) : error);
+
+            ok = SettingsValidation.TryParseExternalTtl("4", out value, out error);
+            Check(
+                "外部段默认存活：4 报错含 5-3600",
+                !ok && error != null && error.IndexOf("5-3600", StringComparison.Ordinal) >= 0,
+                error);
+
+            ok = SettingsValidation.TryParseExternalTtl("3601", out value, out error);
+            Check(
+                "外部段默认存活：3601 报错含 5-3600",
+                !ok && error != null && error.IndexOf("5-3600", StringComparison.Ordinal) >= 0,
+                error);
+
+            ok = SettingsValidation.TryParseExternalTtl("x", out value, out error);
+            Check(
+                "外部段默认存活：非数字报错",
+                !ok && error != null
+                    && error.IndexOf("默认存活", StringComparison.Ordinal) >= 0,
+                error);
+
+            ok = SettingsValidation.TryParseExternalTtl("5", out value, out error);
+            bool ttlUpperOk = SettingsValidation.TryParseExternalTtl("3600", out value, out error);
+            Check(
+                "外部段默认存活：边界 5 与 3600 通过",
+                ok && ttlUpperOk,
+                error);
+
+            ok = SettingsValidation.TryParseIntInRange("10", 10, 20, "数量", out value, out error);
+            bool maxOk = SettingsValidation.TryParseIntInRange("20", 10, 20, "数量", out value, out error);
+            Check(
+                "范围解析：min/max 边界通过",
+                ok && maxOk && error == null,
+                error);
+
+            ok = SettingsValidation.TryParseIntInRange("9", 10, 20, "数量", out value, out error);
+            bool aboveMaxOk = SettingsValidation.TryParseIntInRange(
+                "21",
+                10,
+                20,
+                "数量",
+                out value,
+                out error);
+            Check(
+                "范围解析：min-1 与 max+1 失败",
+                !ok && !aboveMaxOk,
+                error);
+
+            ok = SettingsValidation.TryParseIntInRange("12", 10, 20, "数量", out value, out error);
+            Check(
+                "范围解析：合法值回填",
+                ok && value == 12 && error == null,
+                error == null ? value.ToString(CultureInfo.InvariantCulture) : error);
         }
 
         private static CustomCommandSettings CreateCommand(

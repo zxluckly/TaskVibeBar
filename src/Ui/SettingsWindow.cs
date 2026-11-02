@@ -50,6 +50,12 @@ namespace VibeBar
         private readonly ComboBox _portIntervalBox;
         private readonly ComboBox _prIntervalBox;
         private readonly CustomCommandEditor _commandEditor;
+
+        // 外部段（插件协议 v1）：启用开关 / 最大段数 / 默认存活。
+        private readonly CheckBox _externalEnabledBox;
+        private readonly TextBox _externalMaxSegmentsBox;
+        private readonly TextBox _externalTtlBox;
+
         private readonly TextBlock _validationText;
         private readonly DispatcherTimer _validationTimer;
         private Border _actionBarBorder;
@@ -269,9 +275,33 @@ namespace VibeBar
             _hoverPreview.Margin = new Thickness(10, 0, 0, 0);
             _hoverPreview.VerticalAlignment = VerticalAlignment.Center;
 
+            _externalEnabledBox = new CheckBox();
+            _externalEnabledBox.Content = "启用外部段";
+            _externalEnabledBox.IsChecked = settings.External.Enabled;
+            _externalEnabledBox.Margin = new Thickness(0, 4, 0, 4);
+            _externalEnabledBox.Checked += delegate { UpdateExternalControls(); };
+            _externalEnabledBox.Unchecked += delegate { UpdateExternalControls(); };
+
+            _externalMaxSegmentsBox = new TextBox();
+            _externalMaxSegmentsBox.Height = 28;
+            _externalMaxSegmentsBox.Width = 80;
+            _externalMaxSegmentsBox.HorizontalAlignment = HorizontalAlignment.Left;
+            _externalMaxSegmentsBox.Text = settings.External.MaxSegments.ToString(
+                CultureInfo.InvariantCulture);
+            _externalMaxSegmentsBox.TextChanged += delegate { ClearValidationError(); };
+
+            _externalTtlBox = new TextBox();
+            _externalTtlBox.Height = 28;
+            _externalTtlBox.Width = 80;
+            _externalTtlBox.HorizontalAlignment = HorizontalAlignment.Left;
+            _externalTtlBox.Text = settings.External.DefaultTtlSeconds.ToString(
+                CultureInfo.InvariantCulture);
+            _externalTtlBox.TextChanged += delegate { ClearValidationError(); };
+
             StyleCheckBoxes();
             UpdateHoverControls();
             UpdateHoverPreview();
+            UpdateExternalControls();
 
             _hookStatusText = new TextBlock();
             _hookStatusText.TextWrapping = TextWrapping.Wrap;
@@ -714,6 +744,7 @@ namespace VibeBar
             PrepareCheckBox(_privacyBox);
             PrepareCheckBox(_claudeKeyBox);
             PrepareCheckBox(_hoverThemeBox);
+            PrepareCheckBox(_externalEnabledBox);
 
             for (int index = 0; index < _segmentChecks.Count; index++)
             {
@@ -1061,6 +1092,18 @@ namespace VibeBar
             openConfigButton.Click += OnOpenSettingsFile;
             root.Children.Add(openConfigButton);
 
+            AddLabel(root, "外部段（插件）");
+            root.Children.Add(_externalEnabledBox);
+            root.Children.Add(CreateNumberRow("最大段数", _externalMaxSegmentsBox, "个"));
+            root.Children.Add(CreateNumberRow("默认存活", _externalTtlBox, "秒"));
+            AddHint(root, "推送未带 ttl 时使用（5-3600 秒）。");
+            AddHint(
+                root,
+                "任何程序都可以通过命名管道 \\\\.\\pipe\\VibeBar.Segment.v1 推送段；"
+                + "命令行用法 VibeBar.Cli.exe --segment id=... text=...；"
+                + "详见 docs/插件协议.md。");
+            AddHint(root, "关闭「启用外部段」会立即清除当前所有外部段（保存后立即生效，无需重启）。");
+
             AddLabel(root, "峰谷规则（只读）");
             TextBlock rules = new TextBlock();
             rules.Text = SegmentFactory.SettingsPeakRuleSummary;
@@ -1401,6 +1444,51 @@ namespace VibeBar
             label.VerticalAlignment = VerticalAlignment.Center;
             row.Children.Add(label);
             row.Children.Add(control);
+            return row;
+        }
+
+        /// <summary>
+        /// 未勾选「启用外部段」时两个数值框禁用（灰化）：此时保存也不会用到它们，
+        /// 但保留原文本，重新勾选即可恢复。
+        /// </summary>
+        private void UpdateExternalControls()
+        {
+            if (_externalMaxSegmentsBox == null || _externalTtlBox == null)
+            {
+                return;
+            }
+
+            bool enabled = _externalEnabledBox != null && _externalEnabledBox.IsChecked == true;
+            _externalMaxSegmentsBox.IsEnabled = enabled;
+            _externalTtlBox.IsEnabled = enabled;
+        }
+
+        /// <summary>
+        /// 「标签 + 定宽输入框 + 单位」一行。单位文字当场设 Foreground，
+        /// 否则深色主题下会落到默认黑色。
+        /// </summary>
+        private static StackPanel CreateNumberRow(string labelText, TextBox box, string unitText)
+        {
+            StackPanel row = new StackPanel();
+            row.Orientation = Orientation.Horizontal;
+            row.Margin = new Thickness(0, 6, 0, 0);
+
+            TextBlock label = new TextBlock();
+            label.Text = labelText;
+            label.Width = 150;
+            label.VerticalAlignment = VerticalAlignment.Center;
+            label.Foreground = new SolidColorBrush(UiTheme.AppTextSecondary);
+            row.Children.Add(label);
+
+            box.VerticalAlignment = VerticalAlignment.Center;
+            row.Children.Add(box);
+
+            TextBlock unit = new TextBlock();
+            unit.Text = unitText;
+            unit.Margin = new Thickness(6, 0, 0, 0);
+            unit.VerticalAlignment = VerticalAlignment.Center;
+            unit.Foreground = new SolidColorBrush(UiTheme.AppTextSecondary);
+            row.Children.Add(unit);
             return row;
         }
 
@@ -1759,9 +1847,44 @@ namespace VibeBar
                 return;
             }
 
+            int externalMaxSegments;
+            if (!SettingsValidation.TryParseExternalMaxSegments(
+                _externalMaxSegmentsBox.Text,
+                out externalMaxSegments,
+                out error))
+            {
+                ShowValidationError(error);
+                if (_externalMaxSegmentsBox.IsEnabled)
+                {
+                    _externalMaxSegmentsBox.Focus();
+                }
+
+                return;
+            }
+
+            int externalTtlSeconds;
+            if (!SettingsValidation.TryParseExternalTtl(
+                _externalTtlBox.Text,
+                out externalTtlSeconds,
+                out error))
+            {
+                ShowValidationError(error);
+                if (_externalTtlBox.IsEnabled)
+                {
+                    _externalTtlBox.Focus();
+                }
+
+                return;
+            }
+
             _settings.Ports.WatchPorts = ports;
             _settings.Ports.PollSeconds = GetSelectedSeconds(_portIntervalBox, 5);
             _settings.Pr.PollSeconds = GetSelectedSeconds(_prIntervalBox, 60);
+
+            // 外部段：enabled=false 时 AppController 会停管道并清掉现有外部段。
+            _settings.External.Enabled = _externalEnabledBox.IsChecked == true;
+            _settings.External.MaxSegments = externalMaxSegments;
+            _settings.External.DefaultTtlSeconds = externalTtlSeconds;
 
             string baseUrlText = _baseUrlBox.Text.Trim();
             Uri uri;

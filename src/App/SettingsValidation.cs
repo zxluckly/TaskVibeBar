@@ -21,6 +21,12 @@ namespace VibeBar
         internal const int MinCommandIntervalSeconds = 10;
         internal const int MaxCommandIntervalSeconds = 3600;
         internal const int MaxCommandLabelLength = 12;
+        // 与 SettingsStore.ExternalSettings.NormalizeMaxSegments / NormalizeTtlSeconds 的夹取区间一致，
+        // 避免出现「保存成功但实际生效值被悄悄改掉」。
+        internal const int MinExternalMaxSegments = 1;
+        internal const int MaxExternalMaxSegments = 32;
+        internal const int MinExternalTtlSeconds = 5;
+        internal const int MaxExternalTtlSeconds = 3600;
 
         // 命令 id：小写字母/数字开头，后接小写字母/数字/._-，总长 1-32。
         private const string CommandIdPattern = "^[a-z0-9][a-z0-9._-]{0,31}$";
@@ -113,6 +119,94 @@ namespace VibeBar
             }
 
             return builder.ToString();
+        }
+
+        /// <summary>
+        /// 解析单个整数并检查范围。去首尾空白；空串/非整数/越界都返回 false，
+        /// error 形如「最大段数需在 1-32 之间」，可直接贴到设置窗口的红字上。
+        /// </summary>
+        internal static bool TryParseIntInRange(
+            string text,
+            int min,
+            int max,
+            string label,
+            out int value,
+            out string error)
+        {
+            return TryParseIntInRangeCore(text, min, max, label, null, out value, out error);
+        }
+
+        /// <summary>
+        /// 带单位的版本，仅内部使用：unit 非空时文案变成「默认存活需在 5-3600 秒之间」。
+        /// </summary>
+        private static bool TryParseIntInRangeCore(
+            string text,
+            int min,
+            int max,
+            string label,
+            string unit,
+            out int value,
+            out string error)
+        {
+            value = 0;
+            error = null;
+
+            string name = string.IsNullOrEmpty(label) ? "该项" : label;
+            string range = min.ToString(CultureInfo.InvariantCulture)
+                + "-"
+                + max.ToString(CultureInfo.InvariantCulture);
+            string message = name + "需在 " + range
+                + (string.IsNullOrEmpty(unit) ? " 之间" : " " + unit + "之间");
+
+            string trimmed = text == null ? string.Empty : text.Trim();
+            int parsed;
+            if (trimmed.Length == 0
+                || !int.TryParse(
+                    trimmed,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out parsed))
+            {
+                error = message;
+                return false;
+            }
+
+            if (parsed < min || parsed > max)
+            {
+                error = message;
+                return false;
+            }
+
+            value = parsed;
+            return true;
+        }
+
+        /// <summary>外部段最大条数：1-32。</summary>
+        internal static bool TryParseExternalMaxSegments(
+            string text,
+            out int value,
+            out string error)
+        {
+            return TryParseIntInRange(
+                text,
+                MinExternalMaxSegments,
+                MaxExternalMaxSegments,
+                "最大段数",
+                out value,
+                out error);
+        }
+
+        /// <summary>外部段默认存活秒数：5-3600。</summary>
+        internal static bool TryParseExternalTtl(string text, out int value, out string error)
+        {
+            return TryParseIntInRangeCore(
+                text,
+                MinExternalTtlSeconds,
+                MaxExternalTtlSeconds,
+                "默认存活",
+                "秒",
+                out value,
+                out error);
         }
 
         /// <summary>
