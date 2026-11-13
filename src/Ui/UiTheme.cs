@@ -175,8 +175,74 @@ namespace VibeBar
             get
             {
                 return Theme.IsAppLight()
-                    ? Color.FromArgb(255, 248, 248, 248)
-                    : Color.FromArgb(255, 32, 32, 32);
+                    ? Color.FromArgb(255, 243, 244, 246)
+                    : Color.FromArgb(255, 31, 31, 31);
+            }
+        }
+
+        /// <summary>
+        /// 设置窗口左侧分类导航的底色。比窗口底色略亮/略深，靠 1px 分隔线分开。
+        /// </summary>
+        internal static Color SidebarBackground
+        {
+            get
+            {
+                return Theme.IsAppLight()
+                    ? Color.FromArgb(255, 249, 250, 251)
+                    : Color.FromArgb(255, 37, 37, 37);
+            }
+        }
+
+        /// <summary>
+        /// 设置卡片底色。卡片浮在 WindowBackground 之上，浅色用纯白、深色比窗口亮一档。
+        /// </summary>
+        internal static Color CardBackground
+        {
+            get
+            {
+                return Theme.IsAppLight()
+                    ? Color.FromArgb(255, 255, 255, 255)
+                    : Color.FromArgb(255, 42, 42, 42);
+            }
+        }
+
+        internal static Color CardBorder
+        {
+            get
+            {
+                return Theme.IsAppLight()
+                    ? Color.FromArgb(255, 229, 231, 235)
+                    : Color.FromArgb(255, 58, 58, 58);
+            }
+        }
+
+        internal static Color NavSelectedBackground
+        {
+            get
+            {
+                return Theme.IsAppLight()
+                    ? Color.FromArgb(255, 232, 240, 254)
+                    : Color.FromArgb(255, 45, 55, 72);
+            }
+        }
+
+        internal static Color NavSelectedText
+        {
+            get
+            {
+                return Theme.IsAppLight()
+                    ? Color.FromArgb(255, 26, 115, 232)
+                    : Color.FromArgb(255, 138, 180, 248);
+            }
+        }
+
+        internal static Color NavHoverBackground
+        {
+            get
+            {
+                return Theme.IsAppLight()
+                    ? Color.FromArgb(255, 236, 238, 241)
+                    : Color.FromArgb(255, 46, 46, 46);
             }
         }
 

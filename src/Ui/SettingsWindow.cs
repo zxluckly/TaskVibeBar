@@ -7,6 +7,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
+using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Drawing = System.Drawing;
@@ -58,13 +60,36 @@ namespace VibeBar
 
         private readonly TextBlock _validationText;
         private readonly DispatcherTimer _validationTimer;
-        private Border _actionBarBorder;
 
-        private StackPanel _rootPanel;
+        // 两栏布局：侧边栏导航 + 内容区（页头 / 每页独立滚动区 / 固定操作栏）。
+        // 控件实例只在构造函数里创建一次，切页只改 Visibility。
+        private readonly List<Border> _cards = new List<Border>();
+        private readonly List<NavEntry> _navEntries = new List<NavEntry>();
+        private readonly List<ScrollViewer> _pageScrollers = new List<ScrollViewer>();
+
+        private static readonly string[] PageTitles = { "账号", "常规", "扩展段", "数据与集成" };
+
+        private Border _actionBarBorder;
+        private Border _sidebarBorder;
+        private TextBlock _brandText;
+        private TextBlock _brandSubtitle;
+        private TextBlock _pageTitle;
+        private int _pageIndex = -1;
+
         private Drawing.Rectangle _targetWork = Drawing.Rectangle.Empty;
         private bool _placementHooked;
 
         internal event EventHandler Saved;
+
+        /// <summary>一个侧边栏导航项（圆角 pill + 图标 + 文字）。</summary>
+        private sealed class NavEntry
+        {
+            internal Border Root;
+            internal TextBlock Icon;
+            internal TextBlock Label;
+            internal int Index;
+            internal bool Selected;
+        }
 
         internal SettingsWindow(
             AppSettings settings,
@@ -86,8 +111,8 @@ namespace VibeBar
             _hookInstaller = new HookInstaller();
 
             Title = "VibeBar 设置";
-            Width = 520;
-            SizeToContent = SizeToContent.Height;
+            Width = 900;
+            Height = 680;
             ResizeMode = ResizeMode.NoResize;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             ShowInTaskbar = false;
@@ -347,37 +372,37 @@ namespace VibeBar
                 ClearValidationError();
             };
 
-            ScrollViewer scroll = new ScrollViewer();
-            scroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
-            scroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
-            scroll.Content = BuildLayout();
-
-            // 内容区可滚动，操作栏固定在底部：内容再长也不用滚才能点到「保存」。
+            // 两栏：左 190 侧边栏（固定），右内容区（自适应）。
             Grid shell = new Grid();
-            RowDefinition contentRow = new RowDefinition();
-            contentRow.Height = new GridLength(1, GridUnitType.Star);
-            RowDefinition actionRow = new RowDefinition();
-            actionRow.Height = GridLength.Auto;
-            shell.RowDefinitions.Add(contentRow);
-            shell.RowDefinitions.Add(actionRow);
+            ColumnDefinition sidebarColumn = new ColumnDefinition();
+            sidebarColumn.Width = new GridLength(190);
+            ColumnDefinition contentColumn = new ColumnDefinition();
+            contentColumn.Width = new GridLength(1, GridUnitType.Star);
+            shell.ColumnDefinitions.Add(sidebarColumn);
+            shell.ColumnDefinitions.Add(contentColumn);
 
-            Grid.SetRow(scroll, 0);
-            shell.Children.Add(scroll);
+            FrameworkElement sidebar = BuildSidebar();
+            Grid.SetColumn(sidebar, 0);
+            shell.Children.Add(sidebar);
 
-            FrameworkElement actionBar = BuildActionBar();
-            Grid.SetRow(actionBar, 1);
-            shell.Children.Add(actionBar);
+            FrameworkElement contentArea = BuildContentArea();
+            Grid.SetColumn(contentArea, 1);
+            shell.Children.Add(contentArea);
 
             Content = shell;
 
-            // 高度封顶：内容超高时只压缩滚动区，操作栏始终留在可见范围内。
+            // 高度仍受工作区约束，避免小屏（或高缩放）下窗口超出屏幕。
             double workAreaHeight = SystemParameters.WorkArea.Height;
             MaxHeight = Math.Max(420.0, workAreaHeight - 40.0);
-            scroll.MaxHeight = Math.Max(320.0, workAreaHeight - 220.0);
+
+            SelectPage(0);
 
             // 主题可能在设置窗口打开期间切换（系统深浅色），统一在窗口级重刷。
             Theme.Changed += OnThemeChanged;
             Closed += delegate { Theme.Changed -= OnThemeChanged; };
+
+            // 标题栏是非客户区，WPF 画不到，只能等 HWND 就绪后交给 DWM。
+            SourceInitialized += delegate { ApplyWindowChromeTheme(); };
             ApplyTheme();
         }
 
@@ -611,7 +636,9 @@ namespace VibeBar
             FrameworkElementFactory content = new FrameworkElementFactory(typeof(ContentPresenter));
             content.SetValue(ContentPresenter.MarginProperty, new Thickness(7, 0, 0, 0));
             content.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
-            content.SetValue(ContentPresenter.RecognizesAccessKeyProperty, true);
+            // 关掉助记符：文字里的下划线要原样显示（如 ANTHROPIC_AUTH_TOKEN），
+            // 打开时 "_A" 会被当成快捷键标记而吞掉下划线。
+            content.SetValue(ContentPresenter.RecognizesAccessKeyProperty, false);
             root.AppendChild(content);
 
             template.VisualTree = root;
@@ -806,13 +833,51 @@ namespace VibeBar
             Resources[SystemColors.MenuTextBrushKey] =
                 new SolidColorBrush(UiTheme.AppTextPrimary);
 
-            ThemeElement(_rootPanel);
+            // 侧边栏与导航项不走 ThemeElement（文字色取决于选中态，不能按字重推断）。
+            if (_sidebarBorder != null)
+            {
+                _sidebarBorder.Background = new SolidColorBrush(UiTheme.SidebarBackground);
+                _sidebarBorder.BorderBrush = new SolidColorBrush(UiTheme.CardBorder);
+            }
 
-            // 操作栏不在 _rootPanel 里（它固定在滚动区之外），单独刷一遍。
+            if (_brandText != null)
+            {
+                _brandText.Foreground = new SolidColorBrush(UiTheme.AppTextPrimary);
+            }
+
+            if (_brandSubtitle != null)
+            {
+                _brandSubtitle.Foreground = new SolidColorBrush(UiTheme.AppTextSecondary);
+            }
+
+            for (int index = 0; index < _navEntries.Count; index++)
+            {
+                ApplyNavState(_navEntries[index]);
+            }
+
+            if (_pageTitle != null)
+            {
+                _pageTitle.Foreground = new SolidColorBrush(UiTheme.AppTextPrimary);
+            }
+
+            // 卡片外壳单独上色，内部控件交给 ThemeElement 递归。
+            for (int index = 0; index < _cards.Count; index++)
+            {
+                Border card = _cards[index];
+                SettingsCard.ApplyTheme(card);
+                ThemeElement(card);
+            }
+
+            // 操作栏不在卡片里（固定在滚动区之外），单独刷一遍。
             ThemeElement(_actionBarBorder);
             if (_actionBarBorder != null)
             {
                 _actionBarBorder.BorderBrush = new SolidColorBrush(UiTheme.Separator);
+            }
+
+            if (_hoverPreview != null)
+            {
+                _hoverPreview.BorderBrush = new SolidColorBrush(UiTheme.CardBorder);
             }
 
             // 校验错误文案固定用 Critical 色，不能被 TextBlock 的通用配色覆盖。
@@ -828,6 +893,44 @@ namespace VibeBar
             }
 
             UpdateHoverPreview();
+            ApplyWindowChromeTheme();
+        }
+
+        /// <summary>
+        /// 让系统标题栏跟随应用深浅色。Win11 用 attribute 20，Win10 1809 及更早是 19；
+        /// 系统不支持时 DWM 返回非 0（或根本没有 dwmapi），一律静默忽略，绝不影响窗口显示。
+        /// </summary>
+        private void ApplyWindowChromeTheme()
+        {
+            try
+            {
+                IntPtr handle = new WindowInteropHelper(this).Handle;
+                if (handle == IntPtr.Zero)
+                {
+                    // 还没走 SourceInitialized，等那次回调再设。
+                    return;
+                }
+
+                int useDark = Theme.IsAppLight() ? 0 : 1;
+                int result = NativeMethods.DwmSetWindowAttribute(
+                    handle,
+                    NativeMethods.DWMWA_USE_IMMERSIVE_DARK_MODE,
+                    ref useDark,
+                    sizeof(int));
+
+                if (result != 0)
+                {
+                    NativeMethods.DwmSetWindowAttribute(
+                        handle,
+                        NativeMethods.DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY,
+                        ref useDark,
+                        sizeof(int));
+                }
+            }
+            catch (Exception exception)
+            {
+                Log.Write("设置窗口标题栏配色失败：" + exception.GetType().Name);
+            }
         }
 
         private void ThemeElement(DependencyObject element)
@@ -928,30 +1031,259 @@ namespace VibeBar
             }
         }
 
-        private UIElement BuildLayout()
+        /// <summary>
+        /// 左侧分类导航：品牌标题 + 4 个 pill 导航项。选中态用 NavSelected* 取色，
+        /// 未选中用次要文字色 + 悬停底色。
+        /// </summary>
+        private FrameworkElement BuildSidebar()
         {
-            StackPanel root = new StackPanel();
-            root.Margin = new Thickness(18);
-            _rootPanel = root;
+            StackPanel stack = new StackPanel();
+            stack.Orientation = Orientation.Vertical;
+            stack.Margin = new Thickness(0, 20, 0, 12);
 
-            AddLabel(root, "API Key");
-            root.Children.Add(_apiKeyBox);
-            AddHint(root, "留空表示保持原 Key；Key 仅以 DPAPI 加密保存在本机。");
+            _brandText = new TextBlock();
+            _brandText.Text = "VibeBar";
+            _brandText.FontSize = 16;
+            _brandText.FontWeight = FontWeights.SemiBold;
+            _brandText.Margin = new Thickness(20, 0, 0, 2);
+            _brandText.Foreground = new SolidColorBrush(UiTheme.AppTextPrimary);
+            stack.Children.Add(_brandText);
 
-            AddLabel(root, "Base URL");
-            root.Children.Add(_baseUrlBox);
-            AddHint(root, "默认 https://api.deepseek.com；包含 /anthropic 时自动截断到域名根。");
+            _brandSubtitle = new TextBlock();
+            _brandSubtitle.Text = "设置";
+            _brandSubtitle.FontSize = 12;
+            _brandSubtitle.Margin = new Thickness(20, 0, 0, 16);
+            _brandSubtitle.Foreground = new SolidColorBrush(UiTheme.AppTextSecondary);
+            stack.Children.Add(_brandSubtitle);
 
-            AddLabel(root, "仓库路径");
-            Grid repoRow = new Grid();
-            ColumnDefinition textColumn = new ColumnDefinition();
-            textColumn.Width = new GridLength(1, GridUnitType.Star);
-            ColumnDefinition buttonColumn = new ColumnDefinition();
-            buttonColumn.Width = GridLength.Auto;
-            repoRow.ColumnDefinitions.Add(textColumn);
-            repoRow.ColumnDefinitions.Add(buttonColumn);
+            // 图标码位：账号 / 常规 / 扩展段 / 数据与集成（Segoe MDL2 Assets）。
+            string[] icons = { "\uE77B", "\uE713", "\uE8F1", "\uE8B7" };
+            for (int index = 0; index < icons.Length; index++)
+            {
+                stack.Children.Add(CreateNavItem(index, icons[index], PageTitles[index]));
+            }
 
-            Grid.SetColumn(_repoPathBox, 0);
+            _sidebarBorder = new Border();
+            _sidebarBorder.Background = new SolidColorBrush(UiTheme.SidebarBackground);
+            _sidebarBorder.BorderThickness = new Thickness(0, 0, 1, 0);
+            _sidebarBorder.BorderBrush = new SolidColorBrush(UiTheme.CardBorder);
+            _sidebarBorder.Child = stack;
+            return _sidebarBorder;
+        }
+
+        private FrameworkElement CreateNavItem(int index, string icon, string title)
+        {
+            NavEntry entry = new NavEntry();
+            entry.Index = index;
+
+            TextBlock iconText = new TextBlock();
+            iconText.Text = icon;
+            iconText.FontFamily = SettingsCard.IconFont;
+            iconText.FontSize = 16;
+            iconText.VerticalAlignment = VerticalAlignment.Center;
+            iconText.Width = 18;
+            entry.Icon = iconText;
+
+            TextBlock label = new TextBlock();
+            label.Text = title;
+            label.FontSize = 14;
+            label.Margin = new Thickness(10, 0, 0, 0);
+            label.VerticalAlignment = VerticalAlignment.Center;
+            entry.Label = label;
+
+            StackPanel row = new StackPanel();
+            row.Orientation = Orientation.Horizontal;
+            row.Margin = new Thickness(12, 0, 0, 0);
+            row.VerticalAlignment = VerticalAlignment.Center;
+            row.Children.Add(iconText);
+            row.Children.Add(label);
+
+            Border pill = new Border();
+            pill.Height = 40;
+            pill.Margin = new Thickness(8, 2, 8, 2);
+            pill.CornerRadius = new CornerRadius(6);
+            pill.Background = Brushes.Transparent;
+            pill.Cursor = Cursors.Hand;
+            pill.Child = row;
+            entry.Root = pill;
+
+            // C# 5 的 for 循环变量会被闭包共享，先拷一份到局部变量。
+            int pageIndex = index;
+            pill.MouseLeftButtonUp += delegate { SelectPage(pageIndex); };
+            pill.MouseEnter += delegate { ApplyNavHover(entry, true); };
+            pill.MouseLeave += delegate { ApplyNavHover(entry, false); };
+
+            _navEntries.Add(entry);
+            return pill;
+        }
+
+        private void ApplyNavHover(NavEntry entry, bool hovering)
+        {
+            if (entry == null || entry.Root == null)
+            {
+                return;
+            }
+
+            if (entry.Selected)
+            {
+                entry.Root.Background = new SolidColorBrush(UiTheme.NavSelectedBackground);
+                return;
+            }
+
+            entry.Root.Background = hovering
+                ? new SolidColorBrush(UiTheme.NavHoverBackground)
+                : Brushes.Transparent;
+        }
+
+        private void ApplyNavState(NavEntry entry)
+        {
+            if (entry == null || entry.Root == null)
+            {
+                return;
+            }
+
+            bool selected = entry.Index == _pageIndex;
+            entry.Selected = selected;
+            entry.Root.Background = selected
+                ? new SolidColorBrush(UiTheme.NavSelectedBackground)
+                : Brushes.Transparent;
+
+            SolidColorBrush textBrush = new SolidColorBrush(
+                selected ? UiTheme.NavSelectedText : UiTheme.AppTextSecondary);
+            if (entry.Icon != null)
+            {
+                entry.Icon.Foreground = textBrush;
+            }
+
+            if (entry.Label != null)
+            {
+                entry.Label.Foreground = textBrush;
+            }
+        }
+
+        /// <summary>
+        /// 切换分类：只切 Visibility，不重建控件（重建会丢事件订阅与用户输入）。
+        /// 每页有独立 ScrollViewer，切页时各自回到顶部。
+        /// </summary>
+        private void SelectPage(int index)
+        {
+            if (index < 0 || index >= _pageScrollers.Count)
+            {
+                return;
+            }
+
+            _pageIndex = index;
+            for (int page = 0; page < _pageScrollers.Count; page++)
+            {
+                _pageScrollers[page].Visibility =
+                    page == index ? Visibility.Visible : Visibility.Collapsed;
+            }
+
+            if (_pageTitle != null)
+            {
+                _pageTitle.Text = PageTitles[index];
+            }
+
+            for (int nav = 0; nav < _navEntries.Count; nav++)
+            {
+                ApplyNavState(_navEntries[nav]);
+            }
+
+            _pageScrollers[index].ScrollToVerticalOffset(0);
+        }
+
+        /// <summary>内容区：页头标题 / 页面宿主（每页一个 ScrollViewer）/ 固定操作栏。</summary>
+        private FrameworkElement BuildContentArea()
+        {
+            Grid area = new Grid();
+            area.Margin = new Thickness(24, 20, 24, 12);
+
+            RowDefinition headerRow = new RowDefinition();
+            headerRow.Height = GridLength.Auto;
+            RowDefinition bodyRow = new RowDefinition();
+            bodyRow.Height = new GridLength(1, GridUnitType.Star);
+            RowDefinition actionRow = new RowDefinition();
+            actionRow.Height = GridLength.Auto;
+            area.RowDefinitions.Add(headerRow);
+            area.RowDefinitions.Add(bodyRow);
+            area.RowDefinitions.Add(actionRow);
+
+            _pageTitle = new TextBlock();
+            _pageTitle.FontSize = 22;
+            _pageTitle.FontWeight = FontWeights.SemiBold;
+            _pageTitle.Margin = new Thickness(0, 0, 0, 16);
+            _pageTitle.Foreground = new SolidColorBrush(UiTheme.AppTextPrimary);
+            Grid.SetRow(_pageTitle, 0);
+            area.Children.Add(_pageTitle);
+
+            Grid pageHost = new Grid();
+            Grid.SetRow(pageHost, 1);
+            area.Children.Add(pageHost);
+
+            AddPage(pageHost, BuildAccountPage());
+            AddPage(pageHost, BuildGeneralPage());
+            AddPage(pageHost, BuildExtensionPage());
+            AddPage(pageHost, BuildDataPage());
+
+            FrameworkElement actionBar = BuildActionBar();
+            Grid.SetRow(actionBar, 2);
+            area.Children.Add(actionBar);
+            return area;
+        }
+
+        private void AddPage(Grid host, IList<Border> cards)
+        {
+            StackPanel panel = new StackPanel();
+            panel.Orientation = Orientation.Vertical;
+
+            for (int index = 0; index < cards.Count; index++)
+            {
+                _cards.Add(cards[index]);
+                panel.Children.Add(cards[index]);
+            }
+
+            ScrollViewer scroll = new ScrollViewer();
+            scroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+            scroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+            scroll.Content = panel;
+            scroll.Visibility = Visibility.Collapsed;
+            host.Children.Add(scroll);
+            _pageScrollers.Add(scroll);
+        }
+
+        private IList<Border> BuildAccountPage()
+        {
+            List<Border> cards = new List<Border>();
+
+            // API Key：PasswordBox + 「从 Claude Code 读取」勾选（留空表示保持原 Key）。
+            _apiKeyBox.Width = 360;
+            _apiKeyBox.HorizontalAlignment = HorizontalAlignment.Left;
+            _claudeKeyBox.Margin = new Thickness(0, 10, 0, 0);
+
+            StackPanel keyContent = new StackPanel();
+            keyContent.Orientation = Orientation.Vertical;
+            keyContent.Children.Add(_apiKeyBox);
+            keyContent.Children.Add(_claudeKeyBox);
+
+            cards.Add(SettingsCard.CreateCustom(
+                "\uE8D7",
+                "API Key",
+                "留空表示保持原 Key；Key 仅以 DPAPI 加密保存在本机，settings.json 中不含 Key。",
+                keyContent));
+
+            _baseUrlBox.Width = 320;
+            _baseUrlBox.HorizontalAlignment = HorizontalAlignment.Left;
+            cards.Add(SettingsCard.Create(
+                "\uE774",
+                "Base URL",
+                "默认 https://api.deepseek.com；包含 /anthropic 时自动截断到域名根。",
+                _baseUrlBox));
+
+            _repoPathBox.Width = 320;
+            _repoPathBox.HorizontalAlignment = HorizontalAlignment.Left;
+
+            StackPanel repoRow = new StackPanel();
+            repoRow.Orientation = Orientation.Horizontal;
             repoRow.Children.Add(_repoPathBox);
 
             Button browseButton = new Button();
@@ -959,92 +1291,112 @@ namespace VibeBar
             browseButton.Width = 76;
             browseButton.Height = 28;
             browseButton.Margin = new Thickness(8, 0, 0, 0);
+            browseButton.VerticalAlignment = VerticalAlignment.Center;
             browseButton.Click += OnBrowse;
-            Grid.SetColumn(browseButton, 1);
             repoRow.Children.Add(browseButton);
 
-            root.Children.Add(repoRow);
+            cards.Add(SettingsCard.Create(
+                "\uE8B7",
+                "仓库路径",
+                "Git 段读取的仓库目录。",
+                repoRow));
 
-            AddLabel(root, "刷新间隔");
-            root.Children.Add(_intervalBox);
-            AddHint(root, "余额刷新最低 60 秒；选择 30 秒时按 60 秒保存。");
+            cards.Add(SettingsCard.Create(
+                "\uE72C",
+                "刷新间隔",
+                "余额刷新最低 60 秒；选择 30 秒时按 60 秒保存。",
+                _intervalBox));
 
-            AddLabel(root, "显示与隐私");
-            root.Children.Add(_showTaskbarBox);
-            root.Children.Add(_privacyBox);
-            root.Children.Add(_claudeKeyBox);
+            return cards;
+        }
 
-            AddLabel(root, "任务栏显示区域");
-            root.Children.Add(CreateInlineRow("吸附方式", _anchorBox));
-            root.Children.Add(CreateInlineRow("显示器", _monitorBox));
+        private IList<Border> BuildGeneralPage()
+        {
+            List<Border> cards = new List<Border>();
 
-            StackPanel offsetRow = new StackPanel();
-            offsetRow.Orientation = Orientation.Horizontal;
-            offsetRow.Margin = new Thickness(0, 6, 0, 0);
-            offsetRow.Children.Add(_offsetLabel);
-            offsetRow.Children.Add(_offsetBox);
-            root.Children.Add(offsetRow);
+            _showTaskbarBox.Margin = new Thickness(0);
+            _privacyBox.Margin = new Thickness(0);
 
-            root.Children.Add(CreateInlineRow("最大宽度（px）", _maxWidthBox));
+            List<FrameworkElement> displayRows = new List<FrameworkElement>();
+            displayRows.Add(SettingsCard.CreateRow("任务栏", _showTaskbarBox));
+            displayRows.Add(SettingsCard.CreateRow("隐私", _privacyBox));
+            cards.Add(SettingsCard.CreateRows(
+                "\uE7F4",
+                "显示与隐私",
+                "关闭任务栏显示后状态条隐藏，程序仍在托盘运行。",
+                displayRows));
 
-            StackPanel moduleRow = new StackPanel();
-            moduleRow.Orientation = Orientation.Horizontal;
-            moduleRow.Margin = new Thickness(0, 8, 0, 0);
-            TextBlock moduleLabel = new TextBlock();
-            moduleLabel.Text = "显示模块";
-            moduleLabel.Width = 150;
-            moduleLabel.VerticalAlignment = VerticalAlignment.Center;
-            moduleRow.Children.Add(moduleLabel);
-
-            // 段数量会随插件式扩展增长（额度/Git/会话/端口/PR/自定义），
-            // 用 WrapPanel 换行，避免像横向 StackPanel 那样被窗口右缘裁掉。
-            WrapPanel segmentRow = new WrapPanel();
-            segmentRow.Orientation = Orientation.Horizontal;
-            segmentRow.MaxWidth = 300;
+            List<FrameworkElement> moduleRows = new List<FrameworkElement>();
             for (int index = 0; index < _segmentChecks.Count; index++)
             {
-                segmentRow.Children.Add(_segmentChecks[index]);
+                CheckBox box = _segmentChecks[index];
+                string label = box.Content as string;
+                // 名称交给左侧行标签，勾选框本身只留方框，避免同一行重复两遍。
+                box.Content = string.Empty;
+                box.Margin = new Thickness(0);
+                moduleRows.Add(SettingsCard.CreateRow(
+                    string.IsNullOrEmpty(label) ? "模块" : label,
+                    box));
             }
 
-            moduleRow.Children.Add(segmentRow);
-            root.Children.Add(moduleRow);
-            AddHint(root, "靠右时偏移从托盘左缘算，靠左时从任务栏左缘算；宽度不足时自动折叠为 +N。至少保留一个模块。");
+            cards.Add(SettingsCard.CreateRows(
+                "\uE71D",
+                "显示模块",
+                "至少保留一个模块；宽度不足时自动折叠为 +N。",
+                moduleRows));
 
-            AddLabel(root, "悬停背景");
-            root.Children.Add(_hoverThemeBox);
+            List<FrameworkElement> areaRows = new List<FrameworkElement>();
+            areaRows.Add(SettingsCard.CreateRow("吸附位置", _anchorBox));
+            areaRows.Add(SettingsCard.CreateRow("显示器", _monitorBox));
+            areaRows.Add(SettingsCard.CreateRow(_offsetLabel, _offsetBox));
+            areaRows.Add(SettingsCard.CreateRow("最大宽度（px）", _maxWidthBox));
+            cards.Add(SettingsCard.CreateRows(
+                "\uE740",
+                "任务栏显示区域",
+                "靠右时偏移从托盘左缘算，靠左时从任务栏左缘算。",
+                areaRows));
+
+            _hoverThemeBox.Margin = new Thickness(0);
+
+            StackPanel hoverContent = new StackPanel();
+            hoverContent.Orientation = Orientation.Vertical;
+            hoverContent.Children.Add(_hoverThemeBox);
 
             StackPanel hoverColorRow = new StackPanel();
             hoverColorRow.Orientation = Orientation.Horizontal;
-            hoverColorRow.Margin = new Thickness(0, 8, 0, 0);
-            TextBlock colorLabel = new TextBlock();
-            colorLabel.Text = "颜色";
-            colorLabel.Width = 150;
-            colorLabel.VerticalAlignment = VerticalAlignment.Center;
-            hoverColorRow.Children.Add(colorLabel);
+            hoverColorRow.Margin = new Thickness(0, 10, 0, 0);
+            hoverColorRow.Children.Add(CreateRowLabel("颜色"));
             hoverColorRow.Children.Add(_hoverColorBox);
             hoverColorRow.Children.Add(_hoverPreview);
-            root.Children.Add(hoverColorRow);
+            hoverContent.Children.Add(hoverColorRow);
 
             StackPanel hoverOpacityRow = new StackPanel();
             hoverOpacityRow.Orientation = Orientation.Horizontal;
-            hoverOpacityRow.Margin = new Thickness(0, 8, 0, 0);
-            TextBlock opacityLabel = new TextBlock();
-            opacityLabel.Text = "透明度";
-            opacityLabel.Width = 150;
-            opacityLabel.VerticalAlignment = VerticalAlignment.Center;
-            hoverOpacityRow.Children.Add(opacityLabel);
+            hoverOpacityRow.Margin = new Thickness(0, 10, 0, 0);
+            hoverOpacityRow.Children.Add(CreateRowLabel("透明度"));
             hoverOpacityRow.Children.Add(_hoverOpacitySlider);
             hoverOpacityRow.Children.Add(_hoverOpacityLabel);
-            root.Children.Add(hoverOpacityRow);
-            AddHint(root, "颜色留空或勾选「跟随系统主题色」时使用主题色；透明度 0% 表示悬停也不显示背景。");
+            hoverContent.Children.Add(hoverOpacityRow);
 
-            AddLabel(root, "扩展段（端口 / PR / 自定义命令）");
-            AddHint(root, "端口段与 PR 段默认关闭，可在上方「显示模块」中开启。");
-            AddHint(
-                root,
-                "改完点「保存」立即生效，无需重启；也可以直接编辑 settings.json（会自动热重载）。");
+            hoverContent.Children.Add(CreateHint(
+                "颜色留空或勾选「跟随系统主题色」时使用主题色；透明度 0% 表示悬停也不显示背景。"));
 
-            AddLabel(root, "关注端口");
+            cards.Add(SettingsCard.CreateCustom(
+                "\uE790",
+                "悬停背景",
+                "鼠标悬停在任务栏状态条上时的背景色。",
+                hoverContent));
+
+            return cards;
+        }
+
+        private IList<Border> BuildExtensionPage()
+        {
+            List<Border> cards = new List<Border>();
+
+            _portsBox.HorizontalAlignment = HorizontalAlignment.Stretch;
+            _portsBox.Margin = new Thickness(0);
+
             Grid portsRow = new Grid();
             ColumnDefinition portsColumn = new ColumnDefinition();
             portsColumn.Width = new GridLength(1, GridUnitType.Star);
@@ -1066,63 +1418,89 @@ namespace VibeBar
             Grid.SetColumn(resetPortsButton, 1);
             portsRow.Children.Add(resetPortsButton);
 
-            root.Children.Add(portsRow);
-            AddHint(root, "逗号/空格/换行分隔；留空表示显示全部监听端口。");
+            StackPanel portsContent = new StackPanel();
+            portsContent.Orientation = Orientation.Vertical;
+            portsContent.Children.Add(portsRow);
+            portsContent.Children.Add(CreateHint("逗号/空格/换行分隔；留空表示显示全部监听端口。"));
 
-            AddLabel(root, "端口刷新间隔");
-            root.Children.Add(_portIntervalBox);
+            cards.Add(SettingsCard.CreateCustom(
+                "\uE968",
+                "关注端口",
+                "只显示你关心的监听端口，其余忽略。",
+                portsContent));
 
-            AddLabel(root, "PR 刷新间隔");
-            root.Children.Add(_prIntervalBox);
+            cards.Add(SettingsCard.Create(
+                "\uE72C",
+                "端口刷新间隔",
+                "端口段扫描本机监听端口的周期。",
+                _portIntervalBox));
 
-            AddLabel(root, "自定义命令");
-            root.Children.Add(_commandEditor.Root);
+            cards.Add(SettingsCard.Create(
+                "\uE8A5",
+                "PR 刷新间隔",
+                "GitHub PR 段的轮询周期。",
+                _prIntervalBox));
 
-            AddHint(
-                root,
-                "⚠ 自定义命令由你本人编写并在本机以 cmd 执行，效果等同于在命令行直接运行，"
-                + "请只填写可信命令；超时固定 3 秒，失败只影响该段。");
+            cards.Add(SettingsCard.CreateCustom(
+                "\uE756",
+                "自定义命令",
+                "由你本人编写并在本机以 cmd 执行，效果等同于在命令行直接运行，"
+                + "请只填写可信命令；超时固定 3 秒，失败只影响该段。",
+                _commandEditor.Root));
 
-            Button openConfigButton = new Button();
-            openConfigButton.Content = "打开 settings.json";
-            openConfigButton.Width = 150;
-            openConfigButton.Height = 28;
-            openConfigButton.HorizontalAlignment = HorizontalAlignment.Left;
-            openConfigButton.Margin = new Thickness(0, 8, 0, 0);
-            openConfigButton.Click += OnOpenSettingsFile;
-            root.Children.Add(openConfigButton);
+            _externalEnabledBox.Content = string.Empty;
+            _externalEnabledBox.Margin = new Thickness(0);
 
-            AddLabel(root, "外部段（插件）");
-            root.Children.Add(_externalEnabledBox);
-            root.Children.Add(CreateNumberRow("最大段数", _externalMaxSegmentsBox, "个"));
-            root.Children.Add(CreateNumberRow("默认存活", _externalTtlBox, "秒"));
-            AddHint(root, "推送未带 ttl 时使用（5-3600 秒）。");
-            AddHint(
-                root,
-                "任何程序都可以通过命名管道 \\\\.\\pipe\\VibeBar.Segment.v1 推送段；"
-                + "命令行用法 VibeBar.Cli.exe --segment id=... text=...；"
-                + "详见 docs/插件协议.md。");
-            AddHint(root, "关闭「启用外部段」会立即清除当前所有外部段（保存后立即生效，无需重启）。");
+            List<FrameworkElement> externalRows = new List<FrameworkElement>();
+            externalRows.Add(SettingsCard.CreateRow("启用外部段", _externalEnabledBox));
+            externalRows.Add(SettingsCard.CreateRow(
+                "最大段数",
+                CreateUnitControl(_externalMaxSegmentsBox, "个")));
+            externalRows.Add(SettingsCard.CreateRow(
+                "默认存活",
+                CreateUnitControl(_externalTtlBox, "秒")));
+            externalRows.Add(CreateHint(
+                "推送未带 ttl 时使用（5-3600 秒）。关闭「启用外部段」会立即清除当前所有外部段。"
+                + "任何程序都可以通过命名管道 \\\\.\\pipe\\VibeBar.Segment.v1 推送段，"
+                + "详见 docs/插件协议.md。"));
 
-            AddLabel(root, "峰谷规则（只读）");
+            cards.Add(SettingsCard.CreateRows(
+                "\uE943",
+                "外部段（插件）",
+                "命令行用法 VibeBar.Cli.exe --segment id=... text=...；保存后立即生效，无需重启。",
+                externalRows));
+
+            return cards;
+        }
+
+        private IList<Border> BuildDataPage()
+        {
+            List<Border> cards = new List<Border>();
+
             TextBlock rules = new TextBlock();
             rules.Text = SegmentFactory.SettingsPeakRuleSummary;
             rules.TextWrapping = TextWrapping.Wrap;
-            rules.Opacity = 0.85;
-            rules.Margin = new Thickness(0, 2, 0, 0);
-            root.Children.Add(rules);
+            rules.Foreground = new SolidColorBrush(UiTheme.AppTextSecondary);
 
-            AddLabel(root, "Claude Code Hooks");
-            root.Children.Add(_hookStatusText);
-            AddHint(
-                root,
+            cards.Add(SettingsCard.CreateCustom(
+                "\uE9D9",
+                "峰谷规则",
+                "DeepSeek 计费时段（只读，随版本内置）。",
+                rules));
+
+            _hookStatusText.Margin = new Thickness(0);
+
+            StackPanel hookContent = new StackPanel();
+            hookContent.Orientation = Orientation.Vertical;
+            hookContent.Children.Add(_hookStatusText);
+            hookContent.Children.Add(CreateHint(
                 "安装 Hooks + statusLine 到 %USERPROFILE%\\.claude\\settings.json，"
                 + "安装前会自动备份；statusLine 用于显示模型与上下文占用。"
-                + "对已启动的会话不生效，请启动新的 Claude Code 会话。");
+                + "对已启动的会话不生效，请启动新的 Claude Code 会话。"));
 
             StackPanel hookButtons = new StackPanel();
             hookButtons.Orientation = Orientation.Horizontal;
-            hookButtons.Margin = new Thickness(0, 8, 0, 0);
+            hookButtons.Margin = new Thickness(0, 10, 0, 0);
 
             Button installHooksButton = new Button();
             installHooksButton.Content = "安装 Hooks + statusLine";
@@ -1139,25 +1517,103 @@ namespace VibeBar
             uninstallHooksButton.Click += OnUninstallHooks;
             hookButtons.Children.Add(uninstallHooksButton);
 
-            root.Children.Add(hookButtons);
+            hookContent.Children.Add(hookButtons);
 
-            return root;
+            cards.Add(SettingsCard.CreateCustom(
+                "\uE943",
+                "Claude Code Hooks",
+                "安装后由 Claude Code 会话把状态推给 VibeBar。",
+                hookContent));
+
+            StackPanel dataButtons = new StackPanel();
+            dataButtons.Orientation = Orientation.Horizontal;
+
+            Button openFolderButton = new Button();
+            openFolderButton.Content = "打开数据目录";
+            openFolderButton.Width = 108;
+            openFolderButton.Height = 28;
+            openFolderButton.Click += OnOpenDataFolder;
+            dataButtons.Children.Add(openFolderButton);
+
+            Button openConfigButton = new Button();
+            openConfigButton.Content = "打开 settings.json";
+            openConfigButton.Width = 150;
+            openConfigButton.Height = 28;
+            openConfigButton.Margin = new Thickness(8, 0, 0, 0);
+            openConfigButton.Click += OnOpenSettingsFile;
+            dataButtons.Children.Add(openConfigButton);
+
+            cards.Add(SettingsCard.Create(
+                "\uE838",
+                "数据目录",
+                "设置、密钥与日志都保存在 %APPDATA%\\VibeBar。",
+                dataButtons));
+
+            return cards;
+        }
+
+        private static TextBlock CreateHint(string text)
+        {
+            TextBlock hint = new TextBlock();
+            hint.Text = text;
+            hint.FontSize = 12;
+            hint.TextWrapping = TextWrapping.Wrap;
+            hint.Margin = new Thickness(0, 8, 0, 0);
+            hint.Foreground = new SolidColorBrush(UiTheme.AppTextSecondary);
+            return hint;
+        }
+
+        /// <summary>卡片内的行标签：140 宽、次要色、垂直居中。</summary>
+        private static TextBlock CreateRowLabel(string text)
+        {
+            TextBlock label = new TextBlock();
+            label.Text = text;
+            label.Width = SettingsCard.RowLabelWidth;
+            label.VerticalAlignment = VerticalAlignment.Center;
+            label.Foreground = new SolidColorBrush(UiTheme.AppTextSecondary);
+            return label;
+        }
+
+        /// <summary>「定宽输入框 + 单位」一行，单位文字显式上色（深色下否则是黑字）。</summary>
+        private static StackPanel CreateUnitControl(TextBox box, string unitText)
+        {
+            StackPanel row = new StackPanel();
+            row.Orientation = Orientation.Horizontal;
+            row.Children.Add(box);
+
+            TextBlock unit = new TextBlock();
+            unit.Text = unitText;
+            unit.Margin = new Thickness(6, 0, 0, 0);
+            unit.VerticalAlignment = VerticalAlignment.Center;
+            unit.Foreground = new SolidColorBrush(UiTheme.AppTextSecondary);
+            row.Children.Add(unit);
+            return row;
         }
 
         /// <summary>
-        /// 窗口底部固定的操作栏：校验红字 + 保存/取消/打开数据目录。
+        /// 内容区底部固定的操作栏：左侧校验红字 + 右侧保存/取消。
         /// 不放进 ScrollViewer，保证内容再长也能直接点到「保存」。
         /// </summary>
         private FrameworkElement BuildActionBar()
         {
-            StackPanel stack = new StackPanel();
+            Grid bar = new Grid();
 
-            // 校验失败的红字在操作栏上方一行；3 秒后或下次编辑时自动消失。
-            stack.Children.Add(_validationText);
+            ColumnDefinition infoColumn = new ColumnDefinition();
+            infoColumn.Width = new GridLength(1, GridUnitType.Star);
+            ColumnDefinition buttonColumn = new ColumnDefinition();
+            buttonColumn.Width = GridLength.Auto;
+            bar.ColumnDefinitions.Add(infoColumn);
+            bar.ColumnDefinitions.Add(buttonColumn);
+
+            // 校验失败的红字显示在左侧；3 秒后或下次编辑时自动消失。
+            _validationText.VerticalAlignment = VerticalAlignment.Center;
+            _validationText.Margin = new Thickness(0, 0, 12, 0);
+            Grid.SetColumn(_validationText, 0);
+            bar.Children.Add(_validationText);
 
             StackPanel buttons = new StackPanel();
             buttons.Orientation = Orientation.Horizontal;
-            buttons.Margin = new Thickness(0, 6, 0, 0);
+            buttons.HorizontalAlignment = HorizontalAlignment.Right;
 
             Button saveButton = new Button();
             saveButton.Content = "保存";
@@ -1175,22 +1631,15 @@ namespace VibeBar
             cancelButton.Margin = new Thickness(8, 0, 0, 0);
             buttons.Children.Add(cancelButton);
 
-            Button openFolderButton = new Button();
-            openFolderButton.Content = "打开数据目录";
-            openFolderButton.Width = 108;
-            openFolderButton.Height = 30;
-            openFolderButton.Margin = new Thickness(16, 0, 0, 0);
-            openFolderButton.Click += OnOpenDataFolder;
-            buttons.Children.Add(openFolderButton);
-
-            stack.Children.Add(buttons);
+            Grid.SetColumn(buttons, 1);
+            bar.Children.Add(buttons);
 
             _actionBarBorder = new Border();
             _actionBarBorder.BorderThickness = new Thickness(0, 1, 0, 0);
             _actionBarBorder.BorderBrush = new SolidColorBrush(UiTheme.Separator);
-            _actionBarBorder.Padding = new Thickness(18, 10, 18, 12);
-            _actionBarBorder.Margin = new Thickness(0, 8, 0, 0);
-            _actionBarBorder.Child = stack;
+            _actionBarBorder.Padding = new Thickness(0, 10, 0, 0);
+            _actionBarBorder.Margin = new Thickness(0, 12, 0, 0);
+            _actionBarBorder.Child = bar;
             return _actionBarBorder;
         }
 
@@ -1428,23 +1877,8 @@ namespace VibeBar
                 GetSelectedAnchor(),
                 "left",
                 StringComparison.Ordinal)
-                ? "距任务栏左侧偏移（px）"
-                : "距托盘偏移（px）";
-        }
-
-        private static StackPanel CreateInlineRow(string labelText, UIElement control)
-        {
-            StackPanel row = new StackPanel();
-            row.Orientation = Orientation.Horizontal;
-            row.Margin = new Thickness(0, 6, 0, 0);
-
-            TextBlock label = new TextBlock();
-            label.Text = labelText;
-            label.Width = 150;
-            label.VerticalAlignment = VerticalAlignment.Center;
-            row.Children.Add(label);
-            row.Children.Add(control);
-            return row;
+                ? "左侧偏移（px）"
+                : "托盘偏移（px）";
         }
 
         /// <summary>
@@ -1461,35 +1895,6 @@ namespace VibeBar
             bool enabled = _externalEnabledBox != null && _externalEnabledBox.IsChecked == true;
             _externalMaxSegmentsBox.IsEnabled = enabled;
             _externalTtlBox.IsEnabled = enabled;
-        }
-
-        /// <summary>
-        /// 「标签 + 定宽输入框 + 单位」一行。单位文字当场设 Foreground，
-        /// 否则深色主题下会落到默认黑色。
-        /// </summary>
-        private static StackPanel CreateNumberRow(string labelText, TextBox box, string unitText)
-        {
-            StackPanel row = new StackPanel();
-            row.Orientation = Orientation.Horizontal;
-            row.Margin = new Thickness(0, 6, 0, 0);
-
-            TextBlock label = new TextBlock();
-            label.Text = labelText;
-            label.Width = 150;
-            label.VerticalAlignment = VerticalAlignment.Center;
-            label.Foreground = new SolidColorBrush(UiTheme.AppTextSecondary);
-            row.Children.Add(label);
-
-            box.VerticalAlignment = VerticalAlignment.Center;
-            row.Children.Add(box);
-
-            TextBlock unit = new TextBlock();
-            unit.Text = unitText;
-            unit.Margin = new Thickness(6, 0, 0, 0);
-            unit.VerticalAlignment = VerticalAlignment.Center;
-            unit.Foreground = new SolidColorBrush(UiTheme.AppTextSecondary);
-            row.Children.Add(unit);
-            return row;
         }
 
         private void UpdateHoverControls()
@@ -1571,26 +1976,6 @@ namespace VibeBar
 
             Color fallback = UiTheme.BarBackground;
             return Color.FromRgb(fallback.R, fallback.G, fallback.B);
-        }
-
-        private static void AddLabel(Panel panel, string text)
-        {
-            TextBlock label = new TextBlock();
-            label.Text = text;
-            label.FontWeight = FontWeights.SemiBold;
-            label.Margin = new Thickness(0, 12, 0, 4);
-            panel.Children.Add(label);
-        }
-
-        private static void AddHint(Panel panel, string text)
-        {
-            TextBlock hint = new TextBlock();
-            hint.Text = text;
-            hint.FontSize = 12;
-            hint.Opacity = 0.75;
-            hint.TextWrapping = TextWrapping.Wrap;
-            hint.Margin = new Thickness(0, 4, 0, 0);
-            panel.Children.Add(hint);
         }
 
         private void OnBrowse(object sender, RoutedEventArgs e)

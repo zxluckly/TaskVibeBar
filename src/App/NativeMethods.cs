@@ -97,6 +97,20 @@ namespace VibeBar
         [DllImport("kernel32.dll")]
         internal static extern int GetOEMCP();
 
+        /// <summary>
+        /// 设置窗口的非客户区（标题栏）配色。Win11 用 DWMWA_USE_IMMERSIVE_DARK_MODE=20，
+        /// Win10 1809 及更早是 19；不支持的旧系统返回非 0，调用方静默忽略。
+        /// </summary>
+        [DllImport("dwmapi.dll")]
+        internal static extern int DwmSetWindowAttribute(
+            IntPtr hwnd,
+            int attribute,
+            ref int value,
+            int size);
+
+        internal const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+        internal const int DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY = 19;
+
         internal delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
         internal const int AF_INET = 2;
